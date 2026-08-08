@@ -20,6 +20,30 @@ const TABS = [
 ];
 
 interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean }
+interface DigestResponse { digest: string[]; translations: { index: number; zh: string }[] }
+
+const hasChinese = (text: string) => /[\u3400-\u9fff\uf900-\ufaff]/.test(text);
+
+function parseDigestResponse(raw: string): DigestResponse {
+  const json = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const parsed: unknown = JSON.parse(json);
+  if (!parsed || typeof parsed !== "object") throw new Error("AI 返回格式无效");
+  const value = parsed as { digest?: unknown; translations?: unknown };
+  const digest = Array.isArray(value.digest)
+    ? value.digest.map((line) => typeof line === "string" ? line.trim() : "").filter(Boolean)
+    : [];
+  if (!digest.length) throw new Error("AI 未返回有效要点");
+  const translations = Array.isArray(value.translations)
+    ? value.translations.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const translation = item as { index?: unknown; zh?: unknown };
+      return typeof translation.index === "number" && Number.isInteger(translation.index) && typeof translation.zh === "string" && translation.zh.trim()
+        ? [{ index: translation.index, zh: translation.zh.trim() }]
+        : [];
+    })
+    : [];
+  return { digest, translations };
+}
 
 function InvestmentNewsPanel() {
   const [data, setData] = useState<RadarData | null>(null);
@@ -35,7 +59,10 @@ function InvestmentNewsPanel() {
 
   const refresh = async () => {
     setRefreshing(true); setErr(null);
-    try { setData(await api.radarRefresh()); }
+    try {
+      setData(await api.radarRefresh());
+      setDigests({});
+    }
     catch (e) { setErr(e instanceof ApiError ? e.message : "刷新失败"); }
     finally { setRefreshing(false); }
   };
@@ -46,18 +73,31 @@ function InvestmentNewsPanel() {
 
   const genDigest = async (ind: Industry) => {
     if (!hasLlm()) { setDigests((d) => ({ ...d, [ind.key]: { needKey: true } })); return; }
+    if (!data?.snapshot_id) { setDigests((d) => ({ ...d, [ind.key]: { err: "资讯快照不存在，请先刷新" } })); return; }
     setDigests((d) => ({ ...d, [ind.key]: { loading: true } }));
-    const ctx = ind.items.slice(0, 25).map((it) => `[${it.time}] ${it.source}｜${it.zh || it.title}`).join("\n");
+    const translationHeadlines = ind.items.map((it, index) => ({
+      index, time: it.time, source: it.source, title: it.title, translate: !hasChinese(it.title),
+    }));
+    const digestHeadlines = translationHeadlines.slice(0, 25);
     const prompt =
       `以下是「${ind.name}」赛道近期资讯。请提炼「今日要点」3-5 条：每条一句话（≤40 字），` +
-      `只客观陈述重要事件 / 趋势，不推荐标的、不预测涨跌、不构成建议。直接用「- 」列点，不要多余前后缀。\n\n${ctx}`;
+      `只客观陈述重要事件 / 趋势，不推荐标的、不预测涨跌、不构成建议。同时将 translate 为 true 的英文标题翻译成简体中文；` +
+      `中文标题不要翻译，也不要出现在 translations 中。digest_news 仅用于提炼要点；` +
+      `translation_titles 中所有 translate 为 true 的标题都必须翻译。只返回合法 JSON，格式为 ` +
+      `{"digest":["要点 1"],"translations":[{"index":0,"zh":"中文标题"}]}，不要 Markdown 代码块或任何额外文字。\n\n` +
+      JSON.stringify({ digest_news: digestHeadlines, translation_titles: translationHeadlines });
     try {
-      let acc = "";
-      await chatStream([{ role: "user", content: prompt }], `${ind.name}赛道资讯`, {
-        onDelta: (t) => { acc += t; setDigests((d) => ({ ...d, [ind.key]: { text: acc } })); },
-      });
+      const result = await chatStream([{ role: "user", content: prompt }], `${ind.name}赛道资讯`);
+      const response = parseDigestResponse(result.content);
+      const translations = response.translations.filter((translation) =>
+        translation.index < translationHeadlines.length && translationHeadlines[translation.index].translate,
+      );
+      const text = response.digest.map((line) => `- ${line}`).join("\n");
+      const saved = await api.saveRadarEnrichment(ind.key, data.snapshot_id, text, translations);
+      setData(saved);
+      setDigests((d) => ({ ...d, [ind.key]: { text } }));
     } catch (e) {
-      setDigests((d) => ({ ...d, [ind.key]: { err: e instanceof ApiError ? e.message : "生成失败" } }));
+      setDigests((d) => ({ ...d, [ind.key]: { err: e instanceof Error ? e.message : "生成失败" } }));
     }
   };
 
@@ -73,7 +113,7 @@ function InvestmentNewsPanel() {
     setBulk((b) => ({ ...b, running: false }));
   };
 
-  const dg = cur ? digests[cur.key] : undefined;
+  const dg = cur ? digests[cur.key] ?? (cur.digest ? { text: cur.digest } : undefined) : undefined;
 
   return (
     <div>
@@ -163,10 +203,17 @@ function InvestmentNewsPanel() {
                 ) : (
                   cur.items.map((it, i) => (
                     <a key={i} href={it.url} target="_blank" rel="noreferrer"
-                      className="group flex items-baseline gap-3 border-b border-border/30 pb-2 text-sm last:border-0">
-                      <span className="w-24 shrink-0 font-mono text-xs text-muted-foreground/70">{it.time}</span>
-                      <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">{it.source}</span>
-                      <span className="flex-1 group-hover:text-primary">{it.zh || it.title}</span>
+                      className="group flex items-start gap-3 border-b border-border/30 pb-2 text-sm last:border-0">
+                      <span className="mt-0.5 w-24 shrink-0 font-mono text-xs text-muted-foreground/70">{it.time}</span>
+                      <span className="mt-0.5 w-20 shrink-0 truncate text-xs text-muted-foreground">{it.source}</span>
+                      <span className="flex-1 group-hover:text-primary">
+                        {it.zh && !hasChinese(it.title) ? (
+                          <span className="block">
+                            <span>{it.zh}</span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground group-hover:text-muted-foreground">{it.title}</span>
+                          </span>
+                        ) : it.title}
+                      </span>
                       <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/0 group-hover:text-primary/60" />
                     </a>
                   ))

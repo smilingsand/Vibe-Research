@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -22,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES_FILE = os.path.join(HERE, "news_sources.json")
 CACHE_DIR = os.path.join(HERE, ".cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "radar.json")
+_CACHE_LOCK = threading.Lock()
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -51,6 +54,20 @@ def _parse_dt(s: str):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _dedupe_items_by_title(items: list[dict]) -> list[dict]:
+    """按规范化标题去重，保留已按时间排序后的第一条来源。"""
+    seen: set[str] = set()
+    out = []
+    for item in items:
+        title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().casefold()
+        if title and title in seen:
+            continue
+        if title:
+            seen.add(title)
+        out.append(item)
+    return out
 
 
 def _fetch_source(src: dict, per: int, cutoff, redline: list[str]):
@@ -128,27 +145,73 @@ def fetch_radar() -> dict:
         industries[idx]["items"].extend(items)
     for ind in industries:
         ind["items"].sort(key=lambda x: x.get("ts", 0), reverse=True)
+        ind["items"] = _dedupe_items_by_title(ind["items"])
 
     data = {
         "generated_at": datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M"),
+        "snapshot_id": uuid.uuid4().hex,
         "recent_days": days,
         "industries": industries,
         "stats": {"industries": len(cfg["industries"]), "total_sources": len(cfg["sources"]), "failed_sources": failed},
     }
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    tmp = CACHE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, CACHE_FILE)  # 原子改名，防两次并发刷新交错写坏缓存
+    # 每次刷新生成全新快照，不保留旧的 AI 要点和译文。
+    with _CACHE_LOCK:
+        _write_cache(data)
     return data
 
 
-def load_cache():
+def _write_cache(data: dict) -> None:
+    """原子写入完整的雷达快照；调用方必须持有 _CACHE_LOCK。"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tmp = f"{CACHE_FILE}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, CACHE_FILE)
+
+
+def _load_cache_unlocked():
     try:
         with open(CACHE_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def load_cache():
+    with _CACHE_LOCK:
+        data = _load_cache_unlocked()
+        # 兼容升级前已存在的缓存：补一次唯一快照标识，不要求用户先刷新。
+        if data and not data.get("snapshot_id"):
+            data["snapshot_id"] = uuid.uuid4().hex
+            _write_cache(data)
+        return data
+
+
+class RadarSnapshotMismatch(ValueError):
+    """AI 结果对应的 RSS 快照已被刷新。"""
+
+
+def save_enrichment(industry_key: str, snapshot_id: str, digest: str, translations: list[dict]) -> dict:
+    """将一个赛道的 AI 要点和标题译文写入当前快照。"""
+    with _CACHE_LOCK:
+        data = _load_cache_unlocked()
+        if not data or data.get("snapshot_id") != snapshot_id:
+            raise RadarSnapshotMismatch("资讯已刷新，请基于最新新闻重新提炼")
+
+        industry = next((i for i in data.get("industries", []) if i.get("key") == industry_key), None)
+        if industry is None:
+            raise KeyError(industry_key)
+
+        industry["digest"] = digest
+        items = industry.get("items") or []
+        for translation in translations:
+            index = translation.get("index")
+            zh = str(translation.get("zh") or "").strip()
+            if isinstance(index, int) and 0 <= index < len(items) and zh:
+                items[index]["zh"] = zh
+
+        _write_cache(data)
+        return data
 
 
 def skeleton() -> dict:
@@ -159,6 +222,7 @@ def skeleton() -> dict:
         byhint[s["hint"]] = byhint.get(s["hint"], 0) + 1
     return {
         "generated_at": None,
+        "snapshot_id": None,
         "recent_days": cfg.get("fetch", {}).get("recent_days", 7),
         "industries": [{"key": i["key"], "name": i["name"], "accent": i["accent"], "total": byhint.get(i["key"], 0), "items": []} for i in cfg["industries"]],
         "stats": {"industries": len(cfg["industries"]), "total_sources": len(cfg["sources"])},

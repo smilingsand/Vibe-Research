@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
+import newsradar
 
 client = TestClient(app_module.app)
 
@@ -51,6 +52,63 @@ def test_chat_cli_not_installed_400():
     })
     # qwen 一般未装 → 400；若恰好装了 qwen 则会进流式（放宽断言）
     assert r.status_code in (400, 200)
+
+
+@pytest.fixture()
+def radar_cache(tmp_path, monkeypatch):
+    """隔离资讯雷达缓存，避免测试读取或写入用户的 radar.json。"""
+    cache_file = tmp_path / "radar.json"
+    monkeypatch.setattr(newsradar, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(newsradar, "CACHE_FILE", str(cache_file))
+    data = {
+        "generated_at": "2026-08-09 10:00",
+        "snapshot_id": "snapshot-current",
+        "recent_days": 7,
+        "industries": [{
+            "key": "ai", "name": "AI", "accent": "#f60", "total": 1,
+            "items": [{"title": "English headline", "url": "https://example.test", "time": "08-09 10:00", "source": "Test"}],
+        }],
+        "stats": {"industries": 1, "total_sources": 1, "failed_sources": 0},
+    }
+    with newsradar._CACHE_LOCK:
+        newsradar._write_cache(data)
+    return data
+
+
+def test_radar_enrichment_persists_digest_and_translations(radar_cache):
+    r = client.post("/api/radar/enrichment", json={
+        "industry_key": "ai",
+        "snapshot_id": radar_cache["snapshot_id"],
+        "digest": "- AI 要点",
+        "translations": [{"index": 0, "zh": "英文标题"}],
+    })
+    assert r.status_code == 200
+    industry = r.json()["data"]["industries"][0]
+    assert industry["digest"] == "- AI 要点"
+    assert industry["items"][0]["title"] == "English headline"
+    assert industry["items"][0]["zh"] == "英文标题"
+    assert newsradar.load_cache()["industries"][0]["digest"] == "- AI 要点"
+
+
+def test_radar_enrichment_rejects_stale_snapshot(radar_cache):
+    r = client.post("/api/radar/enrichment", json={
+        "industry_key": "ai",
+        "snapshot_id": "snapshot-stale",
+        "digest": "- 过期要点",
+        "translations": [],
+    })
+    assert r.status_code == 409
+    assert "digest" not in newsradar.load_cache()["industries"][0]
+
+
+def test_radar_dedupes_items_by_normalized_title():
+    items = [
+        {"title": "Building robots that survive the warehouse", "source": "The Robot Report"},
+        {"title": "  building  robots that survive the warehouse ", "source": "Robotics Business Review"},
+        {"title": "另一条新闻", "source": "Test"},
+    ]
+    deduped = newsradar._dedupe_items_by_title(items)
+    assert [item["source"] for item in deduped] == ["The Robot Report", "Test"]
 
 
 def test_global_stock_404(monkeypatch):

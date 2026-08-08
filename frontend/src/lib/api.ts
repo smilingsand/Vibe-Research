@@ -168,11 +168,15 @@ export interface RadarItem {
   title: string; url: string; time: string; source: string; summary?: string; zh?: string;
 }
 export interface Industry {
-  key: string; name: string; accent: string; total: number; items: RadarItem[];
+  key: string; name: string; accent: string; total: number; items: RadarItem[]; digest?: string;
 }
 export interface RadarData {
-  generated_at: string | null; recent_days: number; industries: Industry[];
+  generated_at: string | null; snapshot_id: string | null; recent_days: number; industries: Industry[];
   stats: { industries: number; total_sources: number; failed_sources?: number };
+}
+
+export interface RadarTranslation {
+  index: number; zh: string;
 }
 
 export interface Holding {
@@ -254,6 +258,8 @@ export const api = {
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
+  saveRadarEnrichment: (industry_key: string, snapshot_id: string, digest: string, translations: RadarTranslation[]) =>
+    request<RadarData>("/radar/enrichment", "POST", { industry_key, snapshot_id, digest, translations }),
   portfolio: () => get<PortfolioData>("/portfolio"),
   addHolding: (code: string, shares: number, cost: number) => request<PortfolioData>("/portfolio/holding", "POST", { code, shares, cost }),
   removeHolding: (code: string) => request<PortfolioData>(`/portfolio/holding?code=${code}`, "DELETE"),

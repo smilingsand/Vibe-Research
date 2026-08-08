@@ -311,6 +311,41 @@ def radar_refresh():
         raise HTTPException(502, f"资讯雷达刷新失败：{e}") from e
 
 
+class RadarTranslationIn(BaseModel):
+    index: int
+    zh: str
+
+
+class RadarEnrichmentIn(BaseModel):
+    industry_key: str
+    snapshot_id: str
+    digest: str
+    translations: list[RadarTranslationIn] = []
+
+
+@app.post("/api/radar/enrichment")
+def radar_enrichment(req: RadarEnrichmentIn):
+    """保存一个 RSS 快照对应的 AI 要点及英文标题译文。"""
+    if not req.industry_key.strip() or not req.snapshot_id.strip() or not req.digest.strip():
+        raise HTTPException(400, "缺少赛道、快照或要点内容")
+    if len(req.digest) > 8000 or len(req.translations) > 100:
+        raise HTTPException(400, "要点或译文数量超出允许范围")
+    for translation in req.translations:
+        if translation.index < 0 or not translation.zh.strip() or len(translation.zh) > 1000:
+            raise HTTPException(400, "译文内容无效")
+    try:
+        return {"data": newsradar.save_enrichment(
+            req.industry_key.strip(),
+            req.snapshot_id.strip(),
+            req.digest.strip(),
+            [translation.model_dump() for translation in req.translations],
+        )}
+    except newsradar.RadarSnapshotMismatch as e:
+        raise HTTPException(409, str(e)) from e
+    except KeyError as e:
+        raise HTTPException(404, "赛道不存在") from e
+
+
 @app.get("/api/market/overview")
 def market_overview():
     """市场情绪 + 板块资金流（板块/大盘级，全站共享缓存 5 分钟）。"""

@@ -40,40 +40,47 @@ def tmp_pf(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_portfolio_crud_roundtrip(tmp_pf):
+def test_portfolio_transaction_ledger_roundtrip(tmp_pf):
     assert client.get("/api/portfolio").json()["data"]["holdings"] == []
 
-    r = client.post("/api/portfolio/holding", json={"code": "600519", "shares": 100, "cost": 8.0})
+    r = client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-01", "shares": 100, "total_cost": 800.0})
     assert r.status_code == 200
     h = r.json()["data"]["holdings"][0]
     assert h["code"] == "600519"
     assert h["pnl"] == pytest.approx((10.0 - 8.0) * 100)
+    assert h["total_cost"] == 800.0
 
-    # 同代码加仓 → 加权平均成本
-    client.post("/api/portfolio/holding", json={"code": "600519", "shares": 100, "cost": 12.0})
-    h = client.get("/api/portfolio").json()["data"]["holdings"][0]
+    # 同代码购买 → 累加总成本并重算成本均价，购买记录保留两笔
+    client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-02", "shares": 100, "total_cost": 1200.0})
+    data = client.get("/api/portfolio").json()["data"]
+    h = data["holdings"][0]
     assert h["shares"] == 200
     assert h["cost"] == pytest.approx(10.0)
+    assert h["total_cost"] == 2000.0
+    assert len(data["purchases"]) == 2
 
-    r = client.post("/api/portfolio/close", json={"code": "600519", "date": "2026-07-05", "price": 11.0, "shares": 200, "cost": 10.0})
+    # 部分清仓按提交时成本均价扣减；清仓历史保留金额与成本快照。
+    r = client.post("/api/portfolio/close", json={"code": "600519", "date": "2026-07-05", "shares": 50, "amount": 550.0})
     assert r.status_code == 200
-    assert r.json()["data"]["closed"][0]["pnl"] == pytest.approx(200.0)
-
-    assert client.delete("/api/portfolio/holding?code=600519").json()["data"]["holdings"] == []
-    assert client.delete("/api/portfolio/close?index=0").json()["data"]["closed"] == []
+    data = r.json()["data"]
+    assert data["closed"][0]["total_cost"] == 500.0
+    assert data["closed"][0]["pnl"] == pytest.approx(50.0)
+    assert data["holdings"][0]["shares"] == 150
+    assert data["holdings"][0]["total_cost"] == 1500.0
     assert client.post("/api/portfolio/refresh").status_code == 200
 
 
 def test_portfolio_add_validation(tmp_pf):
-    assert client.post("/api/portfolio/holding", json={"code": "abc", "shares": 1, "cost": 1}).status_code == 400
-    assert client.post("/api/portfolio/holding", json={"code": "600519", "shares": 0, "cost": 1}).status_code == 400
+    assert client.post("/api/portfolio/holding", json={"code": "abc", "date": "2026-07-01", "shares": 1, "total_cost": 1}).status_code == 400
+    assert client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-01", "shares": 0, "total_cost": 1}).status_code == 400
+    assert client.post("/api/portfolio/holding", json={"code": "600519", "date": "bad", "shares": 1, "total_cost": 1}).status_code == 400
 
 
 def test_portfolio_supports_overseas_and_groups_currency(tmp_pf):
-    assert client.post("/api/portfolio/holding", json={"code": "600519", "shares": 2, "cost": 8}).status_code == 200
-    assert client.post("/api/portfolio/holding", json={"code": "aapl.us", "shares": 3, "cost": 15}).status_code == 200
-    assert client.post("/api/portfolio/holding", json={"code": "700.hk", "shares": 4, "cost": 25}).status_code == 200
-    assert client.post("/api/portfolio/holding", json={"code": "005930.kr", "shares": 5, "cost": 50}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-01", "shares": 2, "total_cost": 16}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "aapl.us", "date": "2026-07-01", "shares": 3, "total_cost": 45}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "700.hk", "date": "2026-07-01", "shares": 4, "total_cost": 100}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "005930.kr", "date": "2026-07-01", "shares": 5, "total_cost": 250}).status_code == 200
 
     data = client.get("/api/portfolio").json()["data"]
     assert [h["currency"] for h in data["holdings"]] == ["CNY", "USD", "HKD", "KRW"]
@@ -85,7 +92,7 @@ def test_portfolio_supports_overseas_and_groups_currency(tmp_pf):
         "KRW": {"market_value": 200.0, "cost": 250.0, "pnl": -50.0, "pnl_pct": -20.0},
     }
 
-    closed = client.post("/api/portfolio/close", json={"code": "AAPL.US", "date": "2026-07-05", "price": 12, "shares": 2, "cost": 15})
+    closed = client.post("/api/portfolio/close", json={"code": "AAPL.US", "date": "2026-07-05", "shares": 2, "amount": 24})
     assert closed.status_code == 200
     assert closed.json()["data"]["closed"][0]["currency"] == "USD"
     assert closed.json()["data"]["realized_pnl"] == {"USD": -6.0}
@@ -98,13 +105,14 @@ def test_portfolio_corrupt_file_returns_empty(tmp_pf):
     assert r.json()["data"]["holdings"] == []
 
 
-# ── issue #13：加仓合并成本保留 4 位小数（ETF/基金成本常见 3-4 位） ──
+# ── 成交单价与金额内部保留 4 位 ──
 
-def test_portfolio_merge_cost_keeps_4_decimals(tmp_pf):
-    client.post("/api/portfolio/holding", json={"code": "510300", "shares": 100, "cost": 1.0001})
-    client.post("/api/portfolio/holding", json={"code": "510300", "shares": 100, "cost": 1.0003})
+def test_portfolio_uses_confirmed_internal_precision(tmp_pf):
+    client.post("/api/portfolio/holding", json={"code": "510300", "date": "2026-07-01", "shares": 3, "total_cost": 1.0001})
+    client.post("/api/portfolio/holding", json={"code": "510300", "date": "2026-07-02", "shares": 3, "total_cost": 2.0001})
     h = client.get("/api/portfolio").json()["data"]["holdings"][0]
-    assert h["cost"] == pytest.approx(1.0002, abs=1e-9)
+    assert h["cost"] == pytest.approx(0.5000)
+    assert h["total_cost"] == 3.0002
 
 
 # ── issue #12：旧版数据在仓库内 .cache/，重下载会丢 → 自动迁到用户目录 ──
@@ -117,7 +125,10 @@ def test_portfolio_legacy_migration(tmp_path, monkeypatch):
     monkeypatch.setattr(pf, "CACHE_DIR", str(tmp_path / "userdata"))
     monkeypatch.setattr(pf, "PF_FILE", str(tmp_path / "userdata" / "portfolio.json"))
     pf._migrate_legacy()
-    assert pf._load()["holdings"][0]["code"] == "600519"
+    upgraded = pf._load()
+    assert upgraded["holdings"][0]["code"] == "600519"
+    assert upgraded["holdings"][0]["total_cost"] == 800.0
+    assert upgraded["purchases"][0]["date"] == "历史导入"
     # 新位置已有数据 → 再跑迁移不覆盖
     pf._save({"holdings": []})
     pf._migrate_legacy()

@@ -1,16 +1,8 @@
-"""持仓数据层 —— 用户自己录入的持仓 + 实时行情叠加浮动盈亏。
-
-合规：持仓是用户主动录入的自己的标的（存本地 ~/.vibe-research/portfolio.json，
-不上传、不进仓库），不预置任何标的、不含 _SEED 兜底、不做推荐。
-盈亏红涨绿跌（A股口径）。含每半小时后台定时刷新 + 手动刷新。
-
-存储位置：默认用户目录 ~/.vibe-research/（可用 VR_DATA_DIR 覆盖）——
-放仓库外，重新下载/覆盖项目文件夹不会丢数据（issue #12）。
-≤v0.1.1 存在 backend/.cache/ 仓库内，首次启动自动迁移（复制，旧文件保留作备份）。
-"""
+"""本地持仓账本：购买/清仓交易驱动当前持仓，并叠加实时行情。"""
 
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import os
 import shutil
@@ -23,12 +15,14 @@ import astock
 import gstock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_OLD_PF_FILE = os.path.join(HERE, ".cache", "portfolio.json")  # ≤v0.1.1 旧位置
-# CACHE_DIR 名字保留（测试/外部按此名 monkeypatch），实际已是用户数据目录
+_OLD_PF_FILE = os.path.join(HERE, ".cache", "portfolio.json")
 CACHE_DIR = os.environ.get("VR_DATA_DIR") or os.path.join(os.path.expanduser("~"), ".vibe-research")
 PF_FILE = os.path.join(CACHE_DIR, "portfolio.json")
 BEIJING = timezone(timedelta(hours=8))
 _LOCK = threading.Lock()
+# 账本内部统一保留 4 位小数；页面层负责以 2 位小数展示。
+_MONEY = Decimal("0.0001")
+_PRICE = Decimal("0.0001")
 
 
 def normalize_code(code: str) -> tuple[str, str]:
@@ -40,36 +34,107 @@ def normalize_code(code: str) -> tuple[str, str]:
     return normalized, currency
 
 
-def _migrate_legacy() -> None:
-    """旧版持仓在仓库内 .cache/ 里，重下载项目会丢；迁到用户目录（新位置已有则不动）。"""
-    try:
-        if not os.path.exists(PF_FILE) and os.path.exists(_OLD_PF_FILE):
-            os.makedirs(CACHE_DIR, exist_ok=True)
-            tmp = PF_FILE + ".migrate.tmp"
-            shutil.copy2(_OLD_PF_FILE, tmp)
-            os.replace(tmp, PF_FILE)  # 原子落位：复制中断不会留半截 portfolio.json 挡住下次重试
-    except OSError as e:
-        # 迁移失败不阻塞启动，但要出声——旧数据原样保留在 _OLD_PF_FILE，可手工复制
-        print(f"[vibe-research] 持仓数据迁移失败（旧数据仍在 {_OLD_PF_FILE}）: {e}", file=sys.stderr)
+def _money(value: object) -> Decimal:
+    return Decimal(str(value)).quantize(_MONEY, rounding=ROUND_HALF_UP)
 
 
-_migrate_legacy()
+def _price(value: object) -> Decimal:
+    return Decimal(str(value)).quantize(_PRICE, rounding=ROUND_HALF_UP)
+
+
+def _number(value: object) -> Decimal:
+    return Decimal(str(value))
+
+
+def _as_float(value: Decimal) -> float:
+    return float(value)
 
 
 def _now() -> str:
     return datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M")
 
 
+def _migrate_legacy() -> None:
+    try:
+        if not os.path.exists(PF_FILE) and os.path.exists(_OLD_PF_FILE):
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            tmp = PF_FILE + ".migrate.tmp"
+            shutil.copy2(_OLD_PF_FILE, tmp)
+            os.replace(tmp, PF_FILE)
+    except OSError as e:
+        print(f"[vibe-research] 持仓数据迁移失败（旧数据仍在 {_OLD_PF_FILE}）: {e}", file=sys.stderr)
+
+
+_migrate_legacy()
+
+
+def _upgrade(d: dict) -> tuple[dict, bool]:
+    """将旧聚合持仓升级为交易账本；不伪造无法得知的买入日期。"""
+    changed = False
+    d.setdefault("holdings", [])
+    d.setdefault("last_refresh", None)
+    if "purchases" not in d:
+        d["purchases"] = []
+        changed = True
+
+    for holding in d["holdings"]:
+        code, currency = normalize_code(holding["code"])
+        if holding.get("code") != code:
+            holding["code"] = code
+            changed = True
+        if holding.get("currency") != currency:
+            holding["currency"] = currency
+            changed = True
+        if "total_cost" not in holding:
+            shares = _number(holding.get("shares", 0))
+            unit_cost = _price(holding.get("cost", 0))
+            total_cost = _money(shares * unit_cost)
+            holding.update({"name": holding.get("name") or code, "total_cost": _as_float(total_cost), "cost": _as_float(unit_cost)})
+            d["purchases"].append({
+                "code": code, "name": holding["name"], "date": "历史导入", "price": _as_float(unit_cost),
+                "shares": _as_float(shares), "total_cost": _as_float(total_cost), "currency": currency,
+            })
+            changed = True
+
+    for closed in d.get("closed", []):
+        code, currency = normalize_code(closed["code"])
+        if closed.get("code") != code:
+            closed["code"] = code
+            changed = True
+        if closed.get("currency") != currency:
+            closed["currency"] = currency
+            changed = True
+        if "amount" not in closed or "total_cost" not in closed:
+            shares = _number(closed.get("shares", 0))
+            price = _price(closed.get("price", 0))
+            unit_cost = _price(closed.get("cost", 0))
+            amount, total_cost = _money(price * shares), _money(unit_cost * shares)
+            pnl = _money(amount - total_cost)
+            closed.update({
+                "price": _as_float(price), "amount": _as_float(amount), "total_cost": _as_float(total_cost),
+                "pnl": _as_float(pnl), "pnl_pct": _as_float((pnl / total_cost * 100).quantize(_MONEY, rounding=ROUND_HALF_UP)) if total_cost else 0.0,
+            })
+            changed = True
+
+    if d.get("schema_version") != 2:
+        d["schema_version"] = 2
+        changed = True
+    return d, changed
+
+
 def _load() -> dict:
     try:
         with open(PF_FILE, encoding="utf-8") as f:
-            return json.load(f)
+            d = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"holdings": [], "last_refresh": None}
+        return {"schema_version": 2, "holdings": [], "purchases": [], "closed": [], "last_refresh": None}
+    d, changed = _upgrade(d)
+    if changed:
+        _save(d)
+    return d
 
 
 def _save(d: dict) -> None:
-    # 先写临时文件再原子改名：并发读若撞上写中途的半截 JSON，会被 _load 静默当成空持仓
     os.makedirs(CACHE_DIR, exist_ok=True)
     tmp = PF_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -77,131 +142,134 @@ def _save(d: dict) -> None:
     os.replace(tmp, PF_FILE)
 
 
-def add_holding(code: str, shares: float, cost: float) -> dict:
-    """加一笔持仓；同代码则按加权平均成本合并（加仓）。"""
-    code, _currency = normalize_code(code)
-    with _LOCK:
-        d = _load()
-        for h in d["holdings"]:
-            if h["code"] == code:
-                total = h["shares"] + shares
-                # 4 位小数：ETF/基金成本常见 3-4 位（issue #13），2-3 位会让市值/盈亏对不上账
-                h["cost"] = round((h["shares"] * h["cost"] + shares * cost) / total, 4) if total else cost
-                h["shares"] = total
-                break
-        else:
-            d["holdings"].append({"code": code, "shares": shares, "cost": cost})
-        _save(d)
-    return get_portfolio()
+def _security_name(code: str, currency: str) -> str:
+    try:
+        if currency == "CNY":
+            return astock.tencent_quote([code]).get(code, {}).get("name", code)
+        return gstock.stock_quote(code).get("name", code)
+    except Exception:
+        return code
 
 
-def remove_holding(code: str) -> dict:
-    code, _currency = normalize_code(code)
-    with _LOCK:
-        d = _load()
-        d["holdings"] = [h for h in d["holdings"] if h["code"] != code]
-        _save(d)
-    return get_portfolio()
-
-
-def close_position(code: str, date: str, price: float, shares: float, cost: float) -> dict:
-    """记一笔已清仓：算已实现盈亏，存入 closed 列表。"""
+def add_holding(code: str, date: str, shares: float, total_cost: float) -> dict:
+    """登记一笔购买交易，并原子更新当前持仓。"""
     code, currency = normalize_code(code)
-    pnl = (price - cost) * shares
+    quantity, amount = _number(shares), _money(total_cost)
+    unit_price = _price(amount / quantity)
     with _LOCK:
         d = _load()
-        d.setdefault("closed", [])
-        try:
-            if currency == "CNY":
-                name = astock.tencent_quote([code]).get(code, {}).get("name", code)
-            else:
-                name = gstock.stock_quote(code).get("name", code)
-        except Exception:
-            name = code
-        d["closed"].append({
-            "code": code, "name": name, "date": date, "price": price,
-            "shares": shares, "cost": cost, "pnl": round(pnl, 2),
-            "pnl_pct": round((price - cost) / cost * 100, 2) if cost else 0.0,
+        name = _security_name(code, currency)
+        holding = next((h for h in d["holdings"] if h["code"] == code), None)
+        if holding:
+            new_shares = _number(holding["shares"]) + quantity
+            new_cost = _money(_number(holding["total_cost"]) + amount)
+            holding.update({"shares": _as_float(new_shares), "total_cost": _as_float(new_cost), "cost": _as_float(_price(new_cost / new_shares))})
+        else:
+            d["holdings"].append({
+                "code": code, "name": name, "shares": _as_float(quantity), "total_cost": _as_float(amount),
+                "cost": _as_float(unit_price), "currency": currency,
+            })
+        d.setdefault("purchases", []).append({
+            "code": code, "name": name, "date": date, "price": _as_float(unit_price), "shares": _as_float(quantity),
+            "total_cost": _as_float(amount), "currency": currency,
+        })
+        _save(d)
+    return get_portfolio()
+
+
+def close_position(code: str, date: str, shares: float, amount: float) -> dict:
+    """登记一笔清仓交易，按提交时成本均价扣减当前仓位并保存成本快照。"""
+    code, currency = normalize_code(code)
+    quantity, proceeds = _number(shares), _money(amount)
+    with _LOCK:
+        d = _load()
+        holding = next((h for h in d["holdings"] if h["code"] == code), None)
+        if not holding:
+            raise ValueError("该证券没有可清仓的当前持仓")
+        current_shares = _number(holding["shares"])
+        if quantity > current_shares:
+            raise ValueError("清仓股数不能超过当前持仓股数")
+        unit_cost = _price(holding["cost"])
+        total_cost = _money(unit_cost * quantity)
+        unit_price = _price(proceeds / quantity)
+        pnl = _money(proceeds - total_cost)
+        remaining_shares = current_shares - quantity
+        if remaining_shares == 0:
+            d["holdings"] = [h for h in d["holdings"] if h["code"] != code]
+        else:
+            remaining_cost = _money(_number(holding["total_cost"]) - total_cost)
+            holding.update({
+                "shares": _as_float(remaining_shares), "total_cost": _as_float(remaining_cost),
+                "cost": _as_float(_price(remaining_cost / remaining_shares)),
+            })
+        d.setdefault("closed", []).append({
+            "code": code, "name": holding.get("name") or code, "date": date, "price": _as_float(unit_price),
+            "shares": _as_float(quantity), "amount": _as_float(proceeds), "total_cost": _as_float(total_cost),
+            "pnl": _as_float(pnl), "pnl_pct": _as_float((pnl / total_cost * 100).quantize(_MONEY, rounding=ROUND_HALF_UP)) if total_cost else 0.0,
             "currency": currency,
         })
         _save(d)
     return get_portfolio()
 
 
-def remove_closed(index: int) -> dict:
-    with _LOCK:
-        d = _load()
-        cl = d.get("closed", [])
-        if 0 <= index < len(cl):
-            cl.pop(index)
-            _save(d)
-    return get_portfolio()
-
-
 def get_portfolio() -> dict:
-    """读持仓 + 实时行情，算每笔与汇总的市值/浮动盈亏。"""
+    """读取当前持仓，行情字段实时计算；账本字段均为提交时已固化的数据。"""
     with _LOCK:
         d = _load()
-    hs = d.get("holdings", [])
+    holdings = d.get("holdings", [])
     rows: list[dict] = []
     totals: dict[str, dict[str, float]] = {}
-    if hs:
-        a_codes = [h["code"] for h in hs if normalize_code(h["code"])[1] == "CNY"]
-        try:
-            quotes = astock.tencent_quote(a_codes) if a_codes else {}
-        except Exception:
-            quotes = {}
-        for h in hs:
-            code, currency = normalize_code(h["code"])
-            if currency == "CNY":
-                q = quotes.get(code, {})
-                name, price = q.get("name", code), q.get("price", 0.0)
-            else:
-                try:
-                    stock = gstock.stock_quote(code)
-                    q = stock.get("quote") or {}
-                    name, price = stock.get("name", code), q.get("price") or 0.0
-                except Exception:
-                    name, price = code, 0.0
-            mv = price * h["shares"]
-            cv = h["cost"] * h["shares"]
-            pnl = mv - cv
-            rows.append({
-                "code": code, "name": name,
-                "price": price, "shares": h["shares"], "cost": h["cost"],
-                "market_value": round(mv, 2), "pnl": round(pnl, 2),
-                "pnl_pct": round(pnl / cv * 100, 2) if cv else 0.0,
-                "currency": currency,
-            })
-            total = totals.setdefault(currency, {"market_value": 0.0, "cost": 0.0})
-            total["market_value"] += mv
-            total["cost"] += cv
-    for total in totals.values():
-        total["market_value"] = round(total["market_value"], 2)
-        total["cost"] = round(total["cost"], 2)
-        total["pnl"] = round(total["market_value"] - total["cost"], 2)
-        total["pnl_pct"] = round(total["pnl"] / total["cost"] * 100, 2) if total["cost"] else 0.0
+    a_codes = [h["code"] for h in holdings if normalize_code(h["code"])[1] == "CNY"]
+    try:
+        quotes = astock.tencent_quote(a_codes) if a_codes else {}
+    except Exception:
+        quotes = {}
 
-    closed: list[dict] = []
+    for holding in holdings:
+        code, currency = normalize_code(holding["code"])
+        if currency == "CNY":
+            quote = quotes.get(code, {})
+            name, price = quote.get("name", holding.get("name", code)), quote.get("price", 0.0)
+        else:
+            try:
+                stock = gstock.stock_quote(code)
+                quote = stock.get("quote") or {}
+                name, price = stock.get("name", holding.get("name", code)), quote.get("price") or 0.0
+            except Exception:
+                name, price = holding.get("name", code), 0.0
+        shares, total_cost = _number(holding["shares"]), _money(holding["total_cost"])
+        market_value = _money(_number(price) * shares)
+        pnl = _money(market_value - total_cost)
+        rows.append({
+            "code": code, "name": name, "price": _as_float(_price(price)), "shares": _as_float(shares),
+            "cost": _as_float(_price(holding["cost"])), "total_cost": _as_float(total_cost),
+            "market_value": _as_float(market_value), "pnl": _as_float(pnl),
+            "pnl_pct": _as_float((pnl / total_cost * 100).quantize(_MONEY, rounding=ROUND_HALF_UP)) if total_cost else 0.0,
+            "currency": currency,
+        })
+        total = totals.setdefault(currency, {"market_value": 0.0, "cost": 0.0})
+        total["market_value"] = _as_float(_money(_number(total["market_value"]) + market_value))
+        total["cost"] = _as_float(_money(_number(total["cost"]) + total_cost))
+
+    for total in totals.values():
+        market_value, total_cost = _money(total["market_value"]), _money(total["cost"])
+        pnl = _money(market_value - total_cost)
+        total["pnl"] = _as_float(pnl)
+        total["pnl_pct"] = _as_float((pnl / total_cost * 100).quantize(_MONEY, rounding=ROUND_HALF_UP)) if total_cost else 0.0
+
+    purchases = list(d.get("purchases", []))
+    closed = list(d.get("closed", []))
     realized: dict[str, float] = {}
-    for item in d.get("closed", []):
-        code, inferred_currency = normalize_code(item["code"])
-        currency = item.get("currency") or inferred_currency
-        row = {**item, "code": code, "currency": currency}
-        closed.append(row)
-        realized[currency] = round(realized.get(currency, 0.0) + float(item.get("pnl", 0)), 2)
+    for item in closed:
+        currency = item.get("currency") or normalize_code(item["code"])[1]
+        realized[currency] = _as_float(_money(_number(realized.get(currency, 0)) + _money(item.get("pnl", 0))))
     return {
-        "holdings": rows,
-        "totals": totals,
-        "closed": closed,
-        "realized_pnl": realized,
-        "updated": _now(),
-        "last_refresh": d.get("last_refresh"),
+        "holdings": rows, "purchases": purchases, "totals": totals, "closed": closed,
+        "realized_pnl": realized, "updated": _now(), "last_refresh": d.get("last_refresh"),
     }
 
 
 def _refresh_snapshot() -> None:
-    """后台定时任务：刷新时间戳（GET 本就实时算，这里记录后台刷新点）。"""
     with _LOCK:
         d = _load()
         d["last_refresh"] = _now()
@@ -209,7 +277,6 @@ def _refresh_snapshot() -> None:
 
 
 def start_scheduler(interval: int = 1800) -> None:
-    """每半小时后台刷新一次持仓数据（daemon 线程）。"""
     def loop():
         while True:
             time.sleep(interval)

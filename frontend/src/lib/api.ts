@@ -181,15 +181,19 @@ export interface RadarTranslation {
 
 export interface Holding {
   code: string; name: string; price: number; shares: number; cost: number;
-  market_value: number; pnl: number; pnl_pct: number; currency: string;
+  total_cost: number; market_value: number; pnl: number; pnl_pct: number; currency: string;
+}
+export interface Purchase {
+  code: string; name: string; date: string; price: number; shares: number; total_cost: number; currency: string;
 }
 export interface ClosedPosition {
-  code: string; name: string; date: string; price: number; shares: number; cost: number;
+  code: string; name: string; date: string; price: number; shares: number; amount: number; total_cost: number;
   pnl: number; pnl_pct: number; currency: string;
 }
 export interface PortfolioTotals { market_value: number; cost: number; pnl: number; pnl_pct: number; }
 export interface PortfolioData {
   holdings: Holding[];
+  purchases: Purchase[];
   totals: Record<string, PortfolioTotals>;
   closed: ClosedPosition[];
   realized_pnl: Record<string, number>;
@@ -262,12 +266,10 @@ export const api = {
   saveRadarEnrichment: (industry_key: string, snapshot_id: string, digest: string, translations: RadarTranslation[]) =>
     request<RadarData>("/radar/enrichment", "POST", { industry_key, snapshot_id, digest, translations }),
   portfolio: () => get<PortfolioData>("/portfolio"),
-  addHolding: (code: string, shares: number, cost: number) => request<PortfolioData>("/portfolio/holding", "POST", { code, shares, cost }),
-  removeHolding: (code: string) => request<PortfolioData>(`/portfolio/holding?code=${code}`, "DELETE"),
+  addHolding: (code: string, date: string, shares: number, totalCost: number) => request<PortfolioData>("/portfolio/holding", "POST", { code, date, shares, total_cost: totalCost }),
   refreshPortfolio: () => request<PortfolioData>("/portfolio/refresh", "POST"),
-  closePosition: (code: string, date: string, price: number, shares: number, cost: number) =>
-    request<PortfolioData>("/portfolio/close", "POST", { code, date, price, shares, cost }),
-  removeClosed: (index: number) => request<PortfolioData>(`/portfolio/close?index=${index}`, "DELETE"),
+  closePosition: (code: string, date: string, shares: number, amount: number) =>
+    request<PortfolioData>("/portfolio/close", "POST", { code, date, shares, amount }),
   valuation: (code: string) => get<Valuation>(`/valuation?code=${code}`),
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),

@@ -63,13 +63,18 @@ Bare codes such as `AAPL` or `00700`, and the old Korean suffix such as `005930.
 - The Intelligence page's A-share filings and individual-news aggregation automatically skips overseas watchlist entries, so it does not send them to A-share-only endpoints.
 - The watchlist input is now one line. Spaces, commas, semicolons, and pasted line breaks all delimit multiple securities.
 
-## 2026-08-09 — Portfolio: overseas securities and currency-separated totals
+## 2026-08-09 — Portfolio: transaction ledger, overseas securities, and currency-separated totals
 
-- **Add holding** and **Add closed position** now accept the same formats as Stock Data: `300760`, `AAPL.US`, `00700.HK`, and `005930.KR`. Short HK codes are zero-padded. Existing local A-share records need no migration and are inferred as `CNY`.
-- Holding and closed-position tables now include a currency column: `CNY` for A shares, `USD` for US shares, `HKD` for Hong Kong shares, and `KRW` for Korean shares. Amounts remain in their native currency; no FX conversion is performed.
-- Market value, cost, unrealized P&L, P&L percentage, and realized P&L are displayed separately for every present currency. Different currencies are never summed together.
-- A-share holdings continue to use Tencent batch quotes. Overseas holdings use the lightweight Eastmoney overseas quote path, which obtains only name and quote data without an extra financial-metrics request.
-- Profit is green; loss is bold red; zero is neutral grey. The AI reading context also explicitly labels every amount and total with its currency.
+- The portfolio is now driven by **purchase transactions** and **closed-position transactions**. A purchase increases the current position; a close reduces it at the then-current average cost and saves a fixed total-cost and realized-P&L snapshot.
+- Purchase history includes name, buy date, execution price, shares, total cost, and currency. Closed-position history includes name, close date, execution price, shares, total proceeds, total cost, realized P&L, P&L percentage, and currency. History does not change with later quotes or transactions.
+- **Add holding record** and **Add closed-position record** accept `300760`, `AAPL.US`, `00700.HK`, and `005930.KR`; currency is inferred from the code. A close cannot exceed the current position. A fully closed position disappears from current holdings while both histories remain.
+- A legacy aggregate holding is automatically converted to one `Historical import` purchase record without inventing an unknown buy date. Direct deletion of positions or transactions is not exposed, preserving ledger consistency.
+- Current holdings retain submitted shares, average cost, and total cost; only quote, market value, unrealized P&L, and P&L percentage are live. A shares use Tencent batch quotes; overseas holdings use lightweight Eastmoney quotes.
+- Market value, cost, unrealized P&L, P&L percentage, and the new realized-P&L card are separated by currency with no FX conversion. Profit is green and loss is bold red.
+- Unit prices and amounts are calculated and saved to local JSON with four decimal places; the page displays two decimal places.
+- The page explicitly states that P&L is buy/sell price-difference P&L only and excludes dividends, rights issues, and other corporate actions. The three tables appear only when populated: holdings sort by market value descending, and purchase/close history sort by date descending; every table supports name-keyword filtering.
+- Holdings show up to 20 rows and purchase/close histories up to 10 rows before their internal scroll area is used. Purchase/close history and both transaction-entry panels are collapsed by default and expand with their arrow button.
+- Each table's name filter performs a case-insensitive contains match independently against both the company name and the security code, so a complete value or a fragment of either field works. Column headers remain fixed at the top of their own scroll area while table rows scroll.
 
 ### Validation
 

@@ -81,19 +81,18 @@ def test_ssrf_public_mode_blocks_internal(monkeypatch):
     # 注：公网域名在 public 姿态会走真实 DNS 解析核对，为保持离线不在此断言
 
 
-# ---- 成本负数 / 日期 ----
+# ---- 持仓账本金额 / 日期 ----
 
-def test_negative_cost_accepted():
-    r = client.post("/api/portfolio/holding", json={"code": "600519", "shares": 100, "cost": -5.5})
-    assert r.status_code == 200
-    client.request("DELETE", "/api/portfolio/holding", params={"code": "600519"})  # 清理
+def test_negative_total_cost_rejected():
+    r = client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-01", "shares": 100, "total_cost": -5.5})
+    assert r.status_code == 400
 
 
 def test_zero_shares_rejected():
-    assert client.post("/api/portfolio/holding", json={"code": "600519", "shares": 0, "cost": 10}).status_code == 400
+    assert client.post("/api/portfolio/holding", json={"code": "600519", "date": "2026-07-01", "shares": 0, "total_cost": 10}).status_code == 400
 
 
 def test_close_bad_date_400():
     r = client.post("/api/portfolio/close",
-                    json={"code": "600519", "date": "2025-13-45", "price": 10, "shares": 100, "cost": 5})
+                    json={"code": "600519", "date": "2025-13-45", "shares": 100, "amount": 1000})
     assert r.status_code == 400

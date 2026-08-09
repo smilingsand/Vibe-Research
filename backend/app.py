@@ -218,8 +218,9 @@ def reflect(req: ReflectReq):
 
 class HoldingIn(BaseModel):
     code: str
+    date: str
     shares: float
-    cost: float
+    total_cost: float
 
 
 @app.get("/api/portfolio")
@@ -233,23 +234,27 @@ def portfolio_get():
 
 @app.post("/api/portfolio/holding")
 def portfolio_add(h: HoldingIn):
-    """加一笔持仓（同代码按加权平均成本合并）。存本地，不上传。"""
+    """登记一笔购买交易，并更新当前持仓。"""
     try:
         code, _currency = pf.normalize_code(h.code)
     except (ValueError, TypeError):
         raise HTTPException(400, "代码应为 6 位 A 股代码，或 AAPL.US、00700.HK、005930.KR") from None
-    if h.shares <= 0:
-        raise HTTPException(400, "数量必须大于 0")
-    # 成本价不限正负：融券 / 返息 / 摊薄后为负成本等情形按结果计算，用户想怎么输就怎么输。
-    return {"data": pf.add_holding(code, h.shares, h.cost)}
+    if h.shares <= 0 or h.total_cost <= 0:
+        raise HTTPException(400, "股数与成本总金额必须大于 0")
+    date = _portfolio_date(h.date, "买入")
+    return {"data": pf.add_holding(code, date, h.shares, h.total_cost)}
 
 
-@app.delete("/api/portfolio/holding")
-def portfolio_remove(code: str = Query(...)):
+def _portfolio_date(value: str, label: str) -> str:
+    date = (value or "").strip()
+    if not date:
+        raise HTTPException(400, f"请填{label}日期")
     try:
-        return {"data": pf.remove_holding(code)}
-    except (ValueError, TypeError):
-        raise HTTPException(400, "不支持的证券代码格式") from None
+        from datetime import datetime
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, f"{label}日期格式应为 YYYY-MM-DD") from None
+    return date
 
 
 # ---- 我的研报（用户上传自己的研报，存本地、不上传、不进开源仓库）----
@@ -291,35 +296,24 @@ def myreports_delete(rid: str):
 class CloseIn(BaseModel):
     code: str
     date: str
-    price: float
     shares: float
-    cost: float
+    amount: float
 
 
 @app.post("/api/portfolio/close")
 def portfolio_close(c: CloseIn):
-    """记一笔已清仓（已实现盈亏）。存本地。"""
+    """登记一笔清仓交易，并从当前持仓扣减。"""
     try:
         code, _currency = pf.normalize_code(c.code)
     except (ValueError, TypeError):
         raise HTTPException(400, "代码应为 6 位 A 股代码，或 AAPL.US、00700.HK、005930.KR") from None
-    if c.price <= 0 or c.shares <= 0:
-        raise HTTPException(400, "清仓价与股数必须大于 0")
-    # 买入成本不限正负（同持仓录入）：按 (清仓价 - 成本) × 股数 的结果计算已实现盈亏。
-    date = (c.date or "").strip()
-    if not date:
-        raise HTTPException(400, "请填清仓日期")
-    from datetime import datetime
     try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "清仓日期格式应为 YYYY-MM-DD") from None
-    return {"data": pf.close_position(code, date, c.price, c.shares, c.cost)}
-
-
-@app.delete("/api/portfolio/close")
-def portfolio_close_remove(index: int = Query(...)):
-    return {"data": pf.remove_closed(index)}
+        if c.shares <= 0 or c.amount <= 0:
+            raise HTTPException(400, "股数与成交总金额必须大于 0")
+        date = _portfolio_date(c.date, "清仓")
+        return {"data": pf.close_position(code, date, c.shares, c.amount)}
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 @app.post("/api/portfolio/refresh")

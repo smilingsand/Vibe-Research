@@ -35,3 +35,10 @@ frontend/tsconfig.tsbuildinfo
 *.log
 .vscode/
 .idea/
+
+# Protect local user data when its storage directory is configured in this repository.
+# Defaults are outside the repository, but VR_DATA_DIR / VR_REPORTS_DIR may override them.
+**/.vibe-research/
+**/portfolio.json
+**/myreports/
+**/user-data/

@@ -234,9 +234,10 @@ def portfolio_get():
 @app.post("/api/portfolio/holding")
 def portfolio_add(h: HoldingIn):
     """加一笔持仓（同代码按加权平均成本合并）。存本地，不上传。"""
-    code = (h.code or "").strip()
-    if not code.isdigit() or len(code) != 6:
-        raise HTTPException(400, "代码必须是 6 位数字")
+    try:
+        code, _currency = pf.normalize_code(h.code)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "代码应为 6 位 A 股代码，或 AAPL.US、00700.HK、005930.KR") from None
     if h.shares <= 0:
         raise HTTPException(400, "数量必须大于 0")
     # 成本价不限正负：融券 / 返息 / 摊薄后为负成本等情形按结果计算，用户想怎么输就怎么输。
@@ -245,7 +246,10 @@ def portfolio_add(h: HoldingIn):
 
 @app.delete("/api/portfolio/holding")
 def portfolio_remove(code: str = Query(...)):
-    return {"data": pf.remove_holding(code.strip())}
+    try:
+        return {"data": pf.remove_holding(code)}
+    except (ValueError, TypeError):
+        raise HTTPException(400, "不支持的证券代码格式") from None
 
 
 # ---- 我的研报（用户上传自己的研报，存本地、不上传、不进开源仓库）----
@@ -295,9 +299,10 @@ class CloseIn(BaseModel):
 @app.post("/api/portfolio/close")
 def portfolio_close(c: CloseIn):
     """记一笔已清仓（已实现盈亏）。存本地。"""
-    code = (c.code or "").strip()
-    if not code.isdigit() or len(code) != 6:
-        raise HTTPException(400, "代码必须是 6 位数字")
+    try:
+        code, _currency = pf.normalize_code(c.code)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "代码应为 6 位 A 股代码，或 AAPL.US、00700.HK、005930.KR") from None
     if c.price <= 0 or c.shares <= 0:
         raise HTTPException(400, "清仓价与股数必须大于 0")
     # 买入成本不限正负（同持仓录入）：按 (清仓价 - 成本) × 股数 的结果计算已实现盈亏。

@@ -63,6 +63,14 @@ Bare codes such as `AAPL` or `00700`, and the old Korean suffix such as `005930.
 - The Intelligence page's A-share filings and individual-news aggregation automatically skips overseas watchlist entries, so it does not send them to A-share-only endpoints.
 - The watchlist input is now one line. Spaces, commas, semicolons, and pasted line breaks all delimit multiple securities.
 
+## 2026-08-09 — Portfolio: overseas securities and currency-separated totals
+
+- **Add holding** and **Add closed position** now accept the same formats as Stock Data: `300760`, `AAPL.US`, `00700.HK`, and `005930.KR`. Short HK codes are zero-padded. Existing local A-share records need no migration and are inferred as `CNY`.
+- Holding and closed-position tables now include a currency column: `CNY` for A shares, `USD` for US shares, `HKD` for Hong Kong shares, and `KRW` for Korean shares. Amounts remain in their native currency; no FX conversion is performed.
+- Market value, cost, unrealized P&L, P&L percentage, and realized P&L are displayed separately for every present currency. Different currencies are never summed together.
+- A-share holdings continue to use Tencent batch quotes. Overseas holdings use the lightweight Eastmoney overseas quote path, which obtains only name and quote data without an extra financial-metrics request.
+- Profit is green; loss is bold red; zero is neutral grey. The AI reading context also explicitly labels every amount and total with its currency.
+
 ### Validation
 
 - Frontend `npm.cmd test`: 16 tests passed.

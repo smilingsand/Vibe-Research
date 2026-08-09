@@ -20,6 +20,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 import astock
+import gstock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _OLD_PF_FILE = os.path.join(HERE, ".cache", "portfolio.json")  # ≤v0.1.1 旧位置
@@ -28,6 +29,15 @@ CACHE_DIR = os.environ.get("VR_DATA_DIR") or os.path.join(os.path.expanduser("~"
 PF_FILE = os.path.join(CACHE_DIR, "portfolio.json")
 BEIJING = timezone(timedelta(hours=8))
 _LOCK = threading.Lock()
+
+
+def normalize_code(code: str) -> tuple[str, str]:
+    """规范化持仓代码，并返回其市场原生币种。"""
+    raw = (code or "").strip().upper()
+    if raw.isdigit() and len(raw) == 6:
+        return raw, "CNY"
+    normalized, _country, currency = gstock.normalize_symbol(raw)
+    return normalized, currency
 
 
 def _migrate_legacy() -> None:
@@ -69,6 +79,7 @@ def _save(d: dict) -> None:
 
 def add_holding(code: str, shares: float, cost: float) -> dict:
     """加一笔持仓；同代码则按加权平均成本合并（加仓）。"""
+    code, _currency = normalize_code(code)
     with _LOCK:
         d = _load()
         for h in d["holdings"]:
@@ -85,6 +96,7 @@ def add_holding(code: str, shares: float, cost: float) -> dict:
 
 
 def remove_holding(code: str) -> dict:
+    code, _currency = normalize_code(code)
     with _LOCK:
         d = _load()
         d["holdings"] = [h for h in d["holdings"] if h["code"] != code]
@@ -94,18 +106,23 @@ def remove_holding(code: str) -> dict:
 
 def close_position(code: str, date: str, price: float, shares: float, cost: float) -> dict:
     """记一笔已清仓：算已实现盈亏，存入 closed 列表。"""
+    code, currency = normalize_code(code)
     pnl = (price - cost) * shares
     with _LOCK:
         d = _load()
         d.setdefault("closed", [])
         try:
-            name = astock.tencent_quote([code]).get(code, {}).get("name", code)
+            if currency == "CNY":
+                name = astock.tencent_quote([code]).get(code, {}).get("name", code)
+            else:
+                name = gstock.stock_quote(code).get("name", code)
         except Exception:
             name = code
         d["closed"].append({
             "code": code, "name": name, "date": date, "price": price,
             "shares": shares, "cost": cost, "pnl": round(pnl, 2),
             "pnl_pct": round((price - cost) / cost * 100, 2) if cost else 0.0,
+            "currency": currency,
         })
         _save(d)
     return get_portfolio()
@@ -126,37 +143,58 @@ def get_portfolio() -> dict:
     with _LOCK:
         d = _load()
     hs = d.get("holdings", [])
-    rows, tmv, tcost = [], 0.0, 0.0
+    rows: list[dict] = []
+    totals: dict[str, dict[str, float]] = {}
     if hs:
+        a_codes = [h["code"] for h in hs if normalize_code(h["code"])[1] == "CNY"]
         try:
-            quotes = astock.tencent_quote([h["code"] for h in hs])
+            quotes = astock.tencent_quote(a_codes) if a_codes else {}
         except Exception:
             quotes = {}
         for h in hs:
-            q = quotes.get(h["code"], {})
-            price = q.get("price", 0.0)
+            code, currency = normalize_code(h["code"])
+            if currency == "CNY":
+                q = quotes.get(code, {})
+                name, price = q.get("name", code), q.get("price", 0.0)
+            else:
+                try:
+                    stock = gstock.stock_quote(code)
+                    q = stock.get("quote") or {}
+                    name, price = stock.get("name", code), q.get("price") or 0.0
+                except Exception:
+                    name, price = code, 0.0
             mv = price * h["shares"]
             cv = h["cost"] * h["shares"]
             pnl = mv - cv
             rows.append({
-                "code": h["code"], "name": q.get("name", h["code"]),
+                "code": code, "name": name,
                 "price": price, "shares": h["shares"], "cost": h["cost"],
                 "market_value": round(mv, 2), "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl / cv * 100, 2) if cv else 0.0,
+                "currency": currency,
             })
-            tmv += mv
-            tcost += cv
-    total_pnl = tmv - tcost
-    closed = d.get("closed", [])
+            total = totals.setdefault(currency, {"market_value": 0.0, "cost": 0.0})
+            total["market_value"] += mv
+            total["cost"] += cv
+    for total in totals.values():
+        total["market_value"] = round(total["market_value"], 2)
+        total["cost"] = round(total["cost"], 2)
+        total["pnl"] = round(total["market_value"] - total["cost"], 2)
+        total["pnl_pct"] = round(total["pnl"] / total["cost"] * 100, 2) if total["cost"] else 0.0
+
+    closed: list[dict] = []
+    realized: dict[str, float] = {}
+    for item in d.get("closed", []):
+        code, inferred_currency = normalize_code(item["code"])
+        currency = item.get("currency") or inferred_currency
+        row = {**item, "code": code, "currency": currency}
+        closed.append(row)
+        realized[currency] = round(realized.get(currency, 0.0) + float(item.get("pnl", 0)), 2)
     return {
         "holdings": rows,
-        "totals": {
-            "market_value": round(tmv, 2), "cost": round(tcost, 2),
-            "pnl": round(total_pnl, 2),
-            "pnl_pct": round(total_pnl / tcost * 100, 2) if tcost else 0.0,
-        },
+        "totals": totals,
         "closed": closed,
-        "realized_pnl": round(sum(c.get("pnl", 0) for c in closed), 2),
+        "realized_pnl": realized,
         "updated": _now(),
         "last_refresh": d.get("last_refresh"),
     }

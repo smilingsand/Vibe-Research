@@ -126,6 +126,12 @@ def _parse_symbol(query: str) -> tuple[str, str]:
     raise SymbolInputError("海外代码格式应为 AAPL.US（美股）、00700.HK（港股）或 005930.KR（韩股）")
 
 
+def normalize_symbol(query: str) -> tuple[str, str, str]:
+    """返回持久化/展示均可使用的规范代码、国家和原生币种。"""
+    country, code = _parse_symbol(query)
+    return f"{code}.{country}", country, {"US": "USD", "HK": "HKD", "KR": "KRW"}[country]
+
+
 def _resolve_stock(query: str) -> tuple[dict, dict] | None:
     """按国家后缀构造确定的东财请求；美股仅在已知美国市场编号内有界尝试。"""
     country, code = _parse_symbol(query)
@@ -163,6 +169,21 @@ def _key_metrics(secucode: str) -> dict | None:
         "gross_margin": m.get("GROSS_PROFIT_RATIO"),
         "net_margin": m.get("NET_PROFIT_RATIO"),
         "debt_ratio": m.get("DEBT_ASSET_RATIO"),
+    }
+
+
+def stock_quote(query: str) -> dict:
+    """海外证券轻量行情：仅取名称、市场和行情，不读取财务指标。"""
+    resolved = _resolve_stock(query)
+    if not resolved:
+        return {}
+    info, data = resolved
+    quote = _quote_from(data)
+    return {
+        "code": info["code"],
+        "name": info["name"] or quote.get("name") or info["code"],
+        "market": info["market"],
+        "quote": quote,
     }
 
 

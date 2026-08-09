@@ -181,17 +181,18 @@ export interface RadarTranslation {
 
 export interface Holding {
   code: string; name: string; price: number; shares: number; cost: number;
-  market_value: number; pnl: number; pnl_pct: number;
+  market_value: number; pnl: number; pnl_pct: number; currency: string;
 }
 export interface ClosedPosition {
   code: string; name: string; date: string; price: number; shares: number; cost: number;
-  pnl: number; pnl_pct: number;
+  pnl: number; pnl_pct: number; currency: string;
 }
+export interface PortfolioTotals { market_value: number; cost: number; pnl: number; pnl_pct: number; }
 export interface PortfolioData {
   holdings: Holding[];
-  totals: { market_value: number; cost: number; pnl: number; pnl_pct: number };
+  totals: Record<string, PortfolioTotals>;
   closed: ClosedPosition[];
-  realized_pnl: number;
+  realized_pnl: Record<string, number>;
   updated: string; last_refresh: string | null;
 }
 

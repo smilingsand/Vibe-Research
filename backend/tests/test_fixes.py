@@ -9,6 +9,7 @@ import app as app_module
 import astock
 import chat
 import cli_runtime
+import gstock
 import market
 import portfolio as pf
 
@@ -33,6 +34,9 @@ def tmp_pf(tmp_path, monkeypatch):
     monkeypatch.setattr(pf, "CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(pf, "PF_FILE", str(tmp_path / "portfolio.json"))
     monkeypatch.setattr(astock, "tencent_quote", lambda codes: {c: {"name": f"股{c}", "price": 10.0} for c in codes})
+    monkeypatch.setattr(gstock, "stock_quote", lambda code: {
+        "name": f"海外{code}", "quote": {"price": {"AAPL.US": 20.0, "00700.HK": 30.0, "005930.KR": 40.0}[code]},
+    })
     return tmp_path
 
 
@@ -63,6 +67,28 @@ def test_portfolio_crud_roundtrip(tmp_pf):
 def test_portfolio_add_validation(tmp_pf):
     assert client.post("/api/portfolio/holding", json={"code": "abc", "shares": 1, "cost": 1}).status_code == 400
     assert client.post("/api/portfolio/holding", json={"code": "600519", "shares": 0, "cost": 1}).status_code == 400
+
+
+def test_portfolio_supports_overseas_and_groups_currency(tmp_pf):
+    assert client.post("/api/portfolio/holding", json={"code": "600519", "shares": 2, "cost": 8}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "aapl.us", "shares": 3, "cost": 15}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "700.hk", "shares": 4, "cost": 25}).status_code == 200
+    assert client.post("/api/portfolio/holding", json={"code": "005930.kr", "shares": 5, "cost": 50}).status_code == 200
+
+    data = client.get("/api/portfolio").json()["data"]
+    assert [h["currency"] for h in data["holdings"]] == ["CNY", "USD", "HKD", "KRW"]
+    assert data["holdings"][2]["code"] == "00700.HK"
+    assert data["totals"] == {
+        "CNY": {"market_value": 20.0, "cost": 16.0, "pnl": 4.0, "pnl_pct": 25.0},
+        "USD": {"market_value": 60.0, "cost": 45.0, "pnl": 15.0, "pnl_pct": 33.33},
+        "HKD": {"market_value": 120.0, "cost": 100.0, "pnl": 20.0, "pnl_pct": 20.0},
+        "KRW": {"market_value": 200.0, "cost": 250.0, "pnl": -50.0, "pnl_pct": -20.0},
+    }
+
+    closed = client.post("/api/portfolio/close", json={"code": "AAPL.US", "date": "2026-07-05", "price": 12, "shares": 2, "cost": 15})
+    assert closed.status_code == 200
+    assert closed.json()["data"]["closed"][0]["currency"] == "USD"
+    assert closed.json()["data"]["realized_pnl"] == {"USD": -6.0}
 
 
 def test_portfolio_corrupt_file_returns_empty(tmp_pf):

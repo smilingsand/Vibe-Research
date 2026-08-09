@@ -16,6 +16,8 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+const HK_INPUT_RE = /^\d{1,5}\.HK$/;
+
 // 金额格式化（后端资金单位：元 / 万元）
 const yi = (v: number) => `${(v / 1e8).toFixed(2)} 亿`;
 
@@ -111,10 +113,12 @@ export function StockData() {
     setMargin([]); setBlockT([]); setHolders([]); setDividend([]); setFundFlow([]); setDt(null); setLockup(null); setBlocks(null); setHotCon([]); setQa([]);
     setGStock(null); setCashflow(null);
 
-    // 6 位纯数字 = A 股；否则（字母 / 港股短代码）走美股 / 港股（global-stock-data）
+    // 6 位纯数字 = A 股；带国家后缀的代码走海外个股数据。
     if (!/^\d{6}$/.test(c)) {
-      // 港股现金流独立回填（美股返回 404 → 静默留空，卡片不渲染）
-      api.hkCashflow(c).then((cf) => { if (rid === runIdRef.current) setCashflow(cf); }).catch(() => { if (rid === runIdRef.current) setCashflow(null); });
+      // 仅港股请求现金流；美股、韩股不再发送必然失败的请求。
+      if (HK_INPUT_RE.test(c)) {
+        api.hkCashflow(c).then((cf) => { if (rid === runIdRef.current) setCashflow(cf); }).catch(() => { if (rid === runIdRef.current) setCashflow(null); });
+      }
       try {
         const g = await api.globalStock(c);
         if (rid === runIdRef.current) setGStock(g);
@@ -221,8 +225,8 @@ export function StockData() {
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9.]/g, "").toUpperCase().slice(0, 12))}
           onKeyDown={(e) => e.key === "Enter" && run()}
-          placeholder="A 股 6 位代码，或美股/港股/韩股（AAPL / 00700 / 005930.KS）"
-          className="w-80 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          placeholder="300760 (A股)；AAPL.US (美股)；00700.HK (港股)；005930.KR (韩股)"
+          className="w-[600px] rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
         />
         <button
           onClick={run}
@@ -591,7 +595,7 @@ export function StockData() {
         </>
       )}
 
-      {!val && !err && !loading && (
+      {!val && !gstock && !err && !loading && (
         <GlassCard>
           <div className="py-10 text-center text-sm text-muted-foreground">
             输入一个 6 位股票代码，拉取它的行情、估值、研报与新闻。<br />

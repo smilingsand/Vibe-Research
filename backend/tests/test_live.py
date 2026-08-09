@@ -92,16 +92,16 @@ def test_turnover_top_shape():
 
 @pytest.mark.live
 def test_global_indices_and_stock():
-    """美股 / 港股：全球指数 + 个股（AAPL / 00700）shape；精确代码匹配挑正股。"""
+    """海外个股：全球指数 + 个股（AAPL.US / 00700.HK）shape；精确代码匹配挑正股。"""
     import gstock
     idx = gstock.global_indices()
     assert isinstance(idx, list)
     if idx:
         assert {"key", "name", "region", "price", "change_pct"} <= set(idx[0])
-    aapl = gstock.us_hk_stock("AAPL")
+    aapl = gstock.us_hk_stock("AAPL.US")
     assert aapl.get("code") == "AAPL" and aapl.get("market") == "NASDAQ"  # 正股，非票据/ETF
     assert aapl["quote"]["price"] is not None
-    hk = gstock.us_hk_stock("00700")
+    hk = gstock.us_hk_stock("00700.HK")
     assert hk.get("market") == "HK"
 
 
@@ -109,10 +109,10 @@ def test_global_indices_and_stock():
 def test_hk_cashflow_shape():
     """港股现金流量表（东财 RPT_HKSK_FN_CASHFLOW）：形状正确；非港股返回 {}。"""
     import gstock
-    cf = gstock.hk_cashflow("00700")
+    cf = gstock.hk_cashflow("00700.HK")
     assert cf.get("market") == "HK" and isinstance(cf.get("periods"), list)
     assert isinstance(cf.get("item_order"), list)
     if cf["periods"]:
         assert "经营活动现金流净额" in cf["item_order"]
         assert {"report_date", "items", "currency"} <= set(cf["periods"][0])
-    assert gstock.hk_cashflow("AAPL") == {}  # 美股不走此接口
+    assert gstock.hk_cashflow("AAPL.US") == {}  # 美股不走此接口

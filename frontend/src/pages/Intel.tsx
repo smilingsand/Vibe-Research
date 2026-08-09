@@ -8,7 +8,7 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { api, ApiError, type RadarData, type Industry, type Announcement, type NewsItem } from "@/lib/api";
-import { loadWatch } from "@/lib/watchlist";
+import { fetchWatchQuotes, isAShareCode, loadWatch } from "@/lib/watchlist";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { cn } from "@/lib/utils";
 
@@ -246,14 +246,16 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
       // 股名（一次批量），失败则退回显示代码
       const nameOf: Record<string, string> = {};
       try {
-        const quotes = await api.quote(cs.join(","));
+        const quotes = await fetchWatchQuotes(cs);
         for (const c of cs) if (quotes[c]?.name) nameOf[c] = quotes[c].name;
       } catch { /* 忽略：无股名不影响公告/新闻 */ }
 
+      // 现有公告与个股新闻接口仅支持 A 股；海外自选仍参与其它页面的行情总览。
+      const aShareCodes = cs.filter(isAShareCode);
       const out: FeedRow[] = [];
       if (kind === "filings") {
         const res = await Promise.all(
-          cs.map((c) => api.announcements(c).then((a) => ({ c, a })).catch(() => ({ c, a: [] as Announcement[] }))),
+          aShareCodes.map((c) => api.announcements(c).then((a) => ({ c, a })).catch(() => ({ c, a: [] as Announcement[] }))),
         );
         for (const { c, a } of res)
           for (const x of a)
@@ -261,7 +263,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
       } else {
         let dep: string | null = null;
         const res = await Promise.all(
-          cs.map((c) =>
+          aShareCodes.map((c) =>
             api.news(c).then((n) => ({ c, n })).catch((e) => {
               if (e instanceof ApiError && e.status === 501) dep = e.message;
               return { c, n: [] as NewsItem[] };

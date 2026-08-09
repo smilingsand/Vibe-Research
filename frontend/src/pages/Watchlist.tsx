@@ -9,9 +9,9 @@ import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { cn } from "@/lib/utils";
 
 // A 股红涨绿跌（与整个看板一致）。
-const color = (v: number | undefined) =>
+const color = (v: number | null | undefined) =>
   v == null ? "text-muted-foreground" : v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground";
-const pct = (v: number | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`);
+const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`);
 
 const LIVE_KEY = "vr-watchlist-live";
 
@@ -52,7 +52,7 @@ export function Watchlist() {
   const add = () => {
     const { next, added } = addCodes(codes, input);
     if (added === 0) {
-      setHint(input.trim() ? "没识别到新的 6 位代码（可能已在自选里）" : null);
+      setHint(input.trim() ? "没识别到新的有效证券代码（可能已在自选里）" : null);
       setInput("");
       return;
     }
@@ -122,22 +122,26 @@ export function Watchlist() {
 
       <GlassCard className="mb-4">
         <label className="mb-1.5 block text-xs text-muted-foreground">
-          批量添加 —— 粘贴一串代码即可（逗号 / 空格 / 换行都行，自动识别 6 位 A 股代码）
+          批量添加 —— 粘贴相应证券代码即可（样例见下，分隔符为：空格 / 逗号 / 分号 / 换行 均可）
         </label>
         <div className="flex gap-2">
-          <textarea
+          <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) add();
+            onPaste={(e) => {
+              e.preventDefault();
+              const pasted = e.clipboardData.getData("text").replace(/[\r\n]+/g, " ");
+              const start = e.currentTarget.selectionStart ?? input.length;
+              const end = e.currentTarget.selectionEnd ?? input.length;
+              setInput(`${input.slice(0, start)}${pasted}${input.slice(end)}`);
             }}
-            rows={2}
-            placeholder={"如：600519 000858, 002463\n300750 688017"}
-            className="flex-1 resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            placeholder="300760 (A股)；AAPL.US (美股)；00700.HK (港股)；005930.KR (韩股)"
+            className="flex-1 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
           <button
             onClick={add}
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 self-start rounded-lg bg-primary/15 px-4 text-sm font-medium text-primary shadow-glow hover:bg-primary/25"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary/15 px-4 text-sm font-medium text-primary shadow-glow hover:bg-primary/25"
           >
             <Plus className="h-4 w-4" /> 添加
           </button>
@@ -201,7 +205,7 @@ export function Watchlist() {
                     <tr key={c} className="border-b border-border/30">
                       <td className="px-2 py-2.5 font-medium">{q?.name || "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{c}</td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? q.price : "—"}</td>
+                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q?.price ?? "—"}</td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pb ?? "—"}</td>

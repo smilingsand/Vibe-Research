@@ -29,9 +29,46 @@ This file records Chris-specific changes on this branch relative to upstream Vib
 - After aggregation and time sorting, each track deduplicates news by normalized title, ignoring case and extra whitespace.
 - Only the first source remains for a duplicated title. This takes effect for newly generated cache data after the next **Refresh**.
 
+## 2026-08-09 — Stock Data: overseas symbol convention
+
+### Input format
+
+- China A shares remain six-digit numeric codes such as `300760` and continue through `astock.py`.
+- US shares use `SYMBOL.US`, for example `AAPL.US`, `MSFT.US`, or `IBM.US`.
+- Hong Kong shares use `CODE.HK`, for example `00700.HK`; the backend zero-pads codes shorter than five digits.
+- Korean shares use `NNNNNN.KR`, for example `005930.KR`.
+
+Bare codes such as `AAPL` or `00700`, and the old Korean suffix such as `005930.KS`, are no longer supported input formats. The backend returns HTTP 400 with the accepted examples.
+
+### Backend resolution and scope
+
+- `gstock.py` no longer depends on Eastmoney's non-working security search endpoint. It constructs quote requests directly from the country suffix.
+- US symbols are tried only against the bounded set of US market identifiers maintained in code, stopping at the first match; no HK, KR, or A-share market identifier is probed.
+- HK and KR symbols each use one deterministic Eastmoney market identifier. If Eastmoney changes the internal mapping, only `_COUNTRY_MARKETS` in `backend/gstock.py` needs maintenance.
+- The frontend requests Hong Kong cash flow only for `.HK` inputs. US and Korean lookups no longer make a cash-flow request that must fail. Korean shares continue to provide quotes only, without Eastmoney F10 metrics.
+
+## 2026-08-09 — Stock Data: backend TTL/LRU cache
+
+- Stock-query cache lives only in the running backend process; it is neither written to the browser nor to disk, and is cleared when the backend restarts.
+- Each read first checks the cache. The same endpoint, symbol, and result-affecting parameters return the in-memory result within the TTL without contacting the remote source. Failed requests are not cached.
+- The cache is capped at 64 entries and evicts the least recently used entry (LRU) when full, preventing unbounded memory growth.
+- Existing A-share caches are unified with newly cached primary valuation (60 seconds), reports (30 minutes), news (10 minutes), overseas quote/metrics (60 seconds), and Hong Kong cash flow (12 hours).
+- Cache keys include result-affecting parameters, such as report page count and news limit, so different query variants cannot share a result incorrectly.
+
+## 2026-08-09 — Watchlist: overseas securities
+
+- The watchlist now supports China A shares as `300760`, US shares as `AAPL.US`, Hong Kong shares as `00700.HK`, and Korean shares as `005930.KR`, matching the Stock Data convention. Hong Kong codes shorter than five digits are zero-padded.
+- The watchlist remains in browser `localStorage`. A shares use the Tencent A-share quote endpoint in batch; overseas securities use the existing Eastmoney overseas quote endpoint one at a time.
+- Both the Watchlist page and Daily Review's watched-security overview support these markets. The live toggle still polls during A-share trading hours; overseas securities load initially or on manual refresh and are subject to the backend's 60-second overseas-quote cache.
+- The Intelligence page's A-share filings and individual-news aggregation automatically skips overseas watchlist entries, so it does not send them to A-share-only endpoints.
+- The watchlist input is now one line. Spaces, commas, semicolons, and pasted line breaks all delimit multiple securities.
+
 ### Validation
 
 - Frontend `npm.cmd test`: 16 tests passed.
 - Frontend `npm.cmd run build`: passed.
+- Backend: `py_compile`, offline symbol-routing simulations, and the API 400 format check passed; read-only Eastmoney checks returned quotes for `AAPL.US`, `00700.HK`, and `005930.KR`, plus cash-flow data for `00700.HK`.
+- Backend: offline TTL/LRU checks passed for hits, expiry, non-caching of errors, 64-entry eviction, parameter isolation, and normalized overseas-symbol cache keys.
+- Frontend: the overseas-watchlist adaptation passed the TypeScript production build and the existing 16 tests.
 - Backend offline checks passed for syntax, cache persistence, stale snapshot rejection, refresh clearing, and title deduplication.
 - `pytest` is not installed in `backend/.venv`, so the added pytest tests have not been run there.

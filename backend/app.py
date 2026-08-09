@@ -9,8 +9,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import os
+from threading import RLock
+import time
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,6 +71,36 @@ def _validate(code: str) -> str:
     if not code.isdigit() or len(code) != 6:
         raise HTTPException(400, "代码必须是 6 位数字")
     return code
+
+
+# 个股等只读数据的进程内 TTL/LRU 缓存。缓存只存在于当前后端进程：重启即清空。
+# key=(接口名, 代码/参数)，值=(写入时刻, 数据)。远程请求异常不会进入缓存。
+_STOCK_CACHE_MAX_ENTRIES = 64
+_STOCK_CACHE: OrderedDict[tuple, tuple[float, object]] = OrderedDict()
+_STOCK_CACHE_LOCK = RLock()
+
+
+def _cached(endpoint: str, key_part: object, ttl: int, fetch):
+    """命中有效 TTL 时直接返回；否则获取后写入，并按最近使用顺序限制为 64 条。"""
+    key = (endpoint, key_part)
+    now = time.monotonic()
+    with _STOCK_CACHE_LOCK:
+        hit = _STOCK_CACHE.get(key)
+        if hit:
+            created_at, data = hit
+            if now - created_at < ttl:
+                _STOCK_CACHE.move_to_end(key)
+                return data
+            del _STOCK_CACHE[key]
+
+    data = fetch()
+
+    with _STOCK_CACHE_LOCK:
+        _STOCK_CACHE[key] = (time.monotonic(), data)
+        _STOCK_CACHE.move_to_end(key)
+        while len(_STOCK_CACHE) > _STOCK_CACHE_MAX_ENTRIES:
+            _STOCK_CACHE.popitem(last=False)
+    return data
 
 
 @app.get("/api/health")
@@ -388,28 +421,34 @@ def global_indices():
 
 @app.get("/api/global/stock")
 def global_stock(symbol: str = Query(..., min_length=1, max_length=16)):
-    """美股 / 港股个股聚合：行情 + 关键财务指标（东财域内源）。symbol 如 AAPL / BABA / 00700。"""
+    """海外个股聚合：行情 + 关键财务指标（东财域内源）。symbol 如 AAPL.US / 00700.HK / 005930.KR。"""
+    symbol = symbol.strip().upper()
     try:
-        data = gstock.us_hk_stock(symbol.strip())
+        data = _cached("global_stock", symbol, 60, lambda: gstock.us_hk_stock(symbol))
         if not data:
-            raise HTTPException(404, f"未找到美股/港股代码「{symbol}」")
+            raise HTTPException(404, f"未找到海外证券代码「{symbol}」")
         return {"data": data}
     except HTTPException:
         raise
+    except gstock.SymbolInputError as e:
+        raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"美港股查询异常：{e}") from e
 
 
 @app.get("/api/global/hk/cashflow")
 def global_hk_cashflow(symbol: str = Query(..., min_length=1, max_length=16)):
-    """港股现金流量表（东财域内源 RPT_HKSK_FN_CASHFLOW）：经营/投资/筹资/净增加，多期。symbol 如 00700。"""
+    """港股现金流量表（东财域内源 RPT_HKSK_FN_CASHFLOW）：经营/投资/筹资/净增加，多期。symbol 如 00700.HK。"""
+    symbol = symbol.strip().upper()
     try:
-        data = gstock.hk_cashflow(symbol.strip())
+        data = _cached("hk_cashflow", symbol, 12 * 3600, lambda: gstock.hk_cashflow(symbol))
         if not data:
             raise HTTPException(404, f"未找到港股「{symbol}」的现金流数据（仅港股支持）")
         return {"data": data}
     except HTTPException:
         raise
+    except gstock.SymbolInputError as e:
+        raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"港股现金流查询异常：{e}") from e
 
@@ -435,59 +474,34 @@ def quote(codes: str = Query(..., description="逗号分隔的 6 位代码")):
         raise HTTPException(502, f"行情源异常：{e}") from e
 
 
-import time as _time
-_PCT_CACHE: dict = {}
-
-
 @app.get("/api/valuation/percentile")
 def valuation_percentile(code: str = Query(...)):
     """PE-TTM / PB 历史分位（近5年）。全站缓存 30 分钟/代码（历史序列日频、变化慢）。"""
     code = _validate(code)
-    hit = _PCT_CACHE.get(code)
-    if hit and _time.time() - hit[0] < 1800:
-        return {"data": hit[1]}
     try:
-        data = astock.valuation_percentile(code)
-        _PCT_CACHE[code] = (_time.time(), data)
-        return {"data": data}
+        return {"data": _cached("valuation_percentile", code, 1800, lambda: astock.valuation_percentile(code))}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"估值分位异常：{e}") from e
 
 
-_ANN_CACHE: dict = {}
-
-
 @app.get("/api/announcements")
 def announcements(code: str = Query(...)):
     """个股近期公告（东财，仅 requests）。缓存 15 分钟/代码。"""
     code = _validate(code)
-    hit = _ANN_CACHE.get(code)
-    if hit and _time.time() - hit[0] < 900:
-        return {"data": hit[1]}
     try:
-        data = astock.announcements(code)
-        _ANN_CACHE[code] = (_time.time(), data)
-        return {"data": data}
+        return {"data": _cached("announcements", code, 900, lambda: astock.announcements(code))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"公告源异常：{e}") from e
-
-
-_FIN_CACHE: dict = {}
 
 
 @app.get("/api/financials")
 def financials(code: str = Query(...)):
     """财务关键指标（同花顺财务摘要，最新报告期）。缓存 30 分钟/代码。"""
     code = _validate(code)
-    hit = _FIN_CACHE.get(code)
-    if hit and _time.time() - hit[0] < 1800:
-        return {"data": hit[1]}
     try:
-        data = astock.financials(code)
-        _FIN_CACHE[code] = (_time.time(), data)
-        return {"data": data}
+        return {"data": _cached("financials", code, 1800, lambda: astock.financials(code))}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -496,10 +510,10 @@ def financials(code: str = Query(...)):
 
 @app.get("/api/valuation")
 def valuation(code: str = Query(...)):
-    """完整估值：行情 + 一致预期 + 前向PE/PEG/消化年数。"""
+    """完整估值：行情 + 一致预期 + 前向PE/PEG/消化年数。缓存 60 秒。"""
     code = _validate(code)
     try:
-        return {"data": astock.full_valuation(code)}
+        return {"data": _cached("valuation", code, 60, lambda: astock.full_valuation(code))}
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -508,23 +522,26 @@ def valuation(code: str = Query(...)):
 
 @app.get("/api/reports")
 def reports(code: str = Query(...), pages: int = Query(2, ge=1, le=5)):
-    """个股研报列表（东财，含 PDF 链接）。仅需 requests。"""
+    """个股研报列表（东财，含 PDF 链接）。缓存 30 分钟。"""
     code = _validate(code)
     try:
-        rows = astock.eastmoney_reports(code, max_pages=pages)
-        for r in rows:
-            r["pdfUrl"] = astock.pdf_url(r.get("infoCode", "")) if r.get("infoCode") else None
-        return {"data": rows}
+        def fetch_reports():
+            rows = astock.eastmoney_reports(code, max_pages=pages)
+            for r in rows:
+                r["pdfUrl"] = astock.pdf_url(r.get("infoCode", "")) if r.get("infoCode") else None
+            return rows
+
+        return {"data": _cached("reports", (code, pages), 1800, fetch_reports)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"研报源异常：{e}") from e
 
 
 @app.get("/api/news")
 def news(code: str = Query(...), limit: int = Query(20, ge=1, le=50)):
-    """个股新闻（东财，需 akshare）。"""
+    """个股新闻（东财，需 akshare）。缓存 10 分钟。"""
     code = _validate(code)
     try:
-        return {"data": astock.stock_news(code, limit=limit)}
+        return {"data": _cached("news", (code, limit), 600, lambda: astock.stock_news(code, limit=limit))}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -581,20 +598,8 @@ def finance(code: str = Query(...)):
 
 # ---------------------------------------------------------------------------
 # 资金面 / 筹码 / 信号（东财数据中心，v3.3 并入）—— 均为「用户查的那只股」的公开数据。
-# 东财有 1s 限流，这些多为日/季级静态数据，统一走 30 分钟缓存，进一步降低被封风险。
+# 东财有 1s 限流，这些多为日/季级静态数据，统一走上方 64 条 TTL/LRU 缓存。
 # ---------------------------------------------------------------------------
-
-_DC_CACHE: dict = {}  # key=(endpoint, code) -> (ts, data)
-
-
-def _cached(endpoint: str, code: str, ttl: int, fetch):
-    key = (endpoint, code)
-    hit = _DC_CACHE.get(key)
-    if hit and _time.time() - hit[0] < ttl:
-        return hit[1]
-    data = fetch()
-    _DC_CACHE[key] = (_time.time(), data)
-    return data
 
 
 @app.get("/api/margin")
@@ -701,13 +706,7 @@ def investor_qa(code: str = Query(...)):
 @app.get("/api/industry")
 def industry(top: int = Query(20, ge=5, le=50)):
     """全行业涨跌幅排名（东财行业板块，板块级、零个股名单）。缓存 5 分钟。"""
-    key = ("industry", str(top))
-    hit = _DC_CACHE.get(key)
-    if hit and _time.time() - hit[0] < 300:
-        return {"data": hit[1]}
     try:
-        data = astock.industry_comparison(top_n=top)
-        _DC_CACHE[key] = (_time.time(), data)
-        return {"data": data}
+        return {"data": _cached("industry", top, 300, lambda: astock.industry_comparison(top_n=top))}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"行业排名异常：{e}") from e

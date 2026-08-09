@@ -11,7 +11,7 @@
 // - **失败退避**：连续失败时间隔翻倍（上限 30 秒），成功后立刻复位，避免断网时疯狂重试。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Quote } from "@/lib/api";
+import { fetchWatchQuotes, isAShareCode, type WatchQuote } from "@/lib/watchlist";
 
 export const LIVE_INTERVAL_MS = 3000;   // A 股 level-1 快照粒度
 const MAX_BACKOFF_MS = 30_000;
@@ -41,7 +41,7 @@ export function isTradingHours(): boolean {
 }
 
 export interface LiveQuotesState {
-  quotes: Record<string, Quote>;
+  quotes: Record<string, WatchQuote>;
   loading: boolean;
   /** 上次成功取到数据的时间戳（ms），从未成功则为 null */
   updatedAt: number | null;
@@ -53,7 +53,7 @@ export interface LiveQuotesState {
 }
 
 export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesState {
-  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [quotes, setQuotes] = useState<Record<string, WatchQuote>>({});
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [polling, setPolling] = useState(false);
@@ -85,7 +85,7 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     const requested = cs.join(",");
     setLoading(true);
     try {
-      const data = await api.quote(requested);
+      const data = await fetchWatchQuotes(cs);
       setQuotes(data);
       setUpdatedAt(Date.now());
       setError(null);
@@ -136,7 +136,7 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
       }
     };
 
-    const shouldRun = () => enabled && !document.hidden && isTradingHours() && codesRef.current.length > 0;
+    const shouldRun = () => enabled && !document.hidden && isTradingHours() && codesRef.current.some(isAShareCode);
 
     const loop = async () => {
       if (cancelled) return;

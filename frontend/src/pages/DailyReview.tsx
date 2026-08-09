@@ -7,15 +7,15 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
-import { api, ApiError, type IndexQuote, type Quote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
+import { api, ApiError, type IndexQuote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
-import { loadWatch, saveWatch, addCodes } from "@/lib/watchlist";
+import { loadWatch, saveWatch, addCodes, fetchWatchQuotes, type WatchQuote } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
 // 对中国用户最不易看错（Simon 2026-07-05 确认；非国际绿涨惯例，是有意选择，勿改）。
-const pctColor = (p: number) => (p > 0 ? "text-danger" : p < 0 ? "text-success" : "text-muted-foreground");
+const pctColor = (p: number | null | undefined) => (p != null && p > 0 ? "text-danger" : p != null && p < 0 ? "text-success" : "text-muted-foreground");
 const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
 
@@ -32,7 +32,7 @@ export function DailyReview() {
   const [globalIdx, setGlobalIdx] = useState<GlobalIndex[]>([]);
   // 关注股票（自选，存本地）
   const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
-  const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
+  const [watchQuotes, setWatchQuotes] = useState<Record<string, WatchQuote>>({});
   const [watchInput, setWatchInput] = useState("");
   const [watchLoading, setWatchLoading] = useState(false);
 
@@ -59,7 +59,7 @@ export function DailyReview() {
   const refreshWatch = (codes: string[]) => {
     if (!codes.length) { setWatchQuotes({}); return; }
     setWatchLoading(true);
-    api.quote(codes.join(",")).then(setWatchQuotes).catch(() => {}).finally(() => setWatchLoading(false));
+    fetchWatchQuotes(codes).then(setWatchQuotes).catch(() => {}).finally(() => setWatchLoading(false));
   };
 
   useEffect(() => {
@@ -190,9 +190,9 @@ export function DailyReview() {
         <div className="mb-3 flex gap-2">
           <input
             value={watchInput}
-            onChange={(e) => setWatchInput(e.target.value.replace(/[^\d,\s]/g, "").slice(0, 80))}
+            onChange={(e) => setWatchInput(e.target.value.slice(0, 160))}
             onKeyDown={(e) => e.key === "Enter" && addWatch()}
-            placeholder="加自选：可批量，如 600519 000858"
+            placeholder="加自选：300760；AAPL.US；00700.HK；005930.KR"
             className="w-60 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
           <button onClick={addWatch}
@@ -213,9 +213,9 @@ export function DailyReview() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                   <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
-                  <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q ? q.price : "—"}</p>
+                  <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q?.price ?? "—"}</p>
                   <p className={cn("text-xs", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>
-                    {q ? `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%` : c}
+                    {q?.change_pct == null ? c : `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%`}
                   </p>
                 </div>
               );

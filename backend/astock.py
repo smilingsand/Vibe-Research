@@ -20,6 +20,8 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from runtime_config import A_SHARE_INDICES
+
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 
@@ -94,18 +96,21 @@ def tencent_quote(codes: list[str]) -> dict[str, dict]:
     return _parse_gtimg(_fetch_gtimg(prefixed))
 
 
-# A股大盘指数（前缀规则与个股不同，固定带前缀代码）
-A_INDICES = ["sh000001", "sz399001", "sz399006", "sh000300"]
+# A股大盘指数（腾讯行情标识；由 backend_config.json 在启动时读取）。
+A_INDICES = tuple(index for index in A_SHARE_INDICES if index["source"] == "tencent")
 
 
 def index_quote() -> list[dict]:
     """A股大盘指数实时行情（上证/深证成指/创业板指/沪深300）。"""
-    parsed = _parse_gtimg(_fetch_gtimg(A_INDICES))
+    symbols = [index["secid"] for index in A_INDICES]
+    parsed = _parse_gtimg(_fetch_gtimg(symbols))
     out = []
-    for full in A_INDICES:
-        q = parsed.get(full[2:])
+    for index in A_INDICES:
+        symbol = index["secid"]
+        q = parsed.get(symbol[2:])
         if q:
-            out.append({"name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
+            out.append({"key": index["key"], "name": q["name"] or index["name"], "region": index["region"],
+                        "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
     return out
 
 

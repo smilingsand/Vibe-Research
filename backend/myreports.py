@@ -22,6 +22,8 @@ import time
 import uuid
 from pathlib import Path
 
+from runtime_config import REPORT_INDUSTRY_KEYWORDS
+
 _OLD_DEFAULT_DIR = Path(__file__).resolve().parent / ".cache" / "myreports"  # ≤v0.1.1 旧位置
 _DATA_DIR = Path(os.environ.get("VR_DATA_DIR") or Path.home() / ".vibe-research")
 _DEFAULT_DIR = _DATA_DIR / "myreports"
@@ -56,18 +58,8 @@ ALLOWED_EXT = {
     ".png", ".jpg", ".jpeg", ".webp",
 }
 
-# 文件名关键词 → 行业标签（顺序即优先级，先命中先用）。纯文件名匹配、零依赖、离线可用。
-_INDUSTRY_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("人形机器人", ["人形", "机器人", "humanoid", "谐波", "丝杠", "滚柱", "灵巧手", "减速器", "optimus", "宇树", "特斯拉"]),
-    ("光互联", ["光互联", "硅光", "cpo", "光模块", "磷化铟", "inp", "光芯片", "源杰", "中际旭创", "天孚"]),
-    ("HBM存储", ["hbm", "存储", "内存", "dram", "长鑫", "美光", "海力士", "颗粒", "闪存", "nand"]),
-    ("AI算力", ["算力", "gpu", "英伟达", "nvidia", "服务器", "液冷", "pcb", "交换机", "cowos", "沪电", "工业富联"]),
-    ("半导体", ["半导体", "芯片", "晶圆", "光刻", "封测", "台积电", "刻蚀", "存储芯片"]),
-    ("新能源", ["锂电", "电池", "光伏", "储能", "固态", "钠电", "宁德", "比亚迪"]),
-    ("创新药", ["创新药", "医药", "生物", "cxo", "临床", "adc", "glp", "药明"]),
-    ("商业航天", ["航天", "卫星", "火箭", "星链", "starlink", "spacex", "蓝箭"]),
-    ("电力电网", ["电力", "电网", "特高压", "变压器", "输配电", "燃气轮机"]),
-]
+# 文件名关键词 → 行业标签（顺序即优先级，先命中先用）。由 backend_config.json 在启动时读取。
+_INDUSTRY_KEYWORDS = REPORT_INDUSTRY_KEYWORDS
 
 
 class ReportError(ValueError):

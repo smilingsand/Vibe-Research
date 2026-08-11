@@ -36,6 +36,7 @@ export function Portfolio() {
   const [data, setData] = useState<PortfolioData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingQuotes, setLoadingQuotes] = useState(false);
   const [code, setCode] = useState("");
   const [buyDate, setBuyDate] = useState("");
   const [shares, setShares] = useState("");
@@ -59,9 +60,10 @@ export function Portfolio() {
 
   const load = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
+    setLoadingQuotes(true);
     try { setData(manual ? await api.refreshPortfolio() : await api.portfolio()); setErr(null); }
     catch (e) { setErr(e instanceof ApiError ? e.message : "加载失败"); }
-    finally { if (manual) setRefreshing(false); }
+    finally { setLoadingQuotes(false); if (manual) setRefreshing(false); }
   }, []);
 
   useEffect(() => {
@@ -123,6 +125,7 @@ export function Portfolio() {
 
   return <div>
     <PageHeader title="我的持仓" subtitle="自己录、存在本地，实时看浮动盈亏（仅为买卖交易盈亏，未计分红配股等公司行为）" actions={<div className="flex items-center gap-2">
+      {loadingQuotes && <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground" role="status"><Loader2 className="h-4 w-4 animate-spin" /> 行情数据访问中...</span>}
       {(holdings.length > 0 || closed.length > 0) && <AskAiButton context={aiContext} label="让 AI 看我的持仓" suggestions={["我的持仓集中在哪些方向", "结构上有什么风险", "帮我梳理一下"]} />}
       <button onClick={() => load(true)} disabled={refreshing} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">{refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} 刷新</button>
     </div>} />

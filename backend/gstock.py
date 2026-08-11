@@ -18,19 +18,14 @@ from __future__ import annotations
 import re
 
 import astock
+from runtime_config import GLOBAL_INDICES
 
 _UA_H = {"User-Agent": astock.UA}
 _GS_HOSTS = ("push2.eastmoney.com", "push2delay.eastmoney.com")
 _gs_host = [0]  # 当前可用主机下标；首次 push2 掉连后 latch 到 push2delay
 
-# 全球指数（东财 push2 secid）—— A 股看隔夜外围脸色的核心几个，均已实测。
-_INDICES = (
-    {"key": "dji", "name": "道琼斯", "secid": "100.DJIA", "region": "美股"},
-    {"key": "spx", "name": "标普500", "secid": "100.SPX", "region": "美股"},
-    {"key": "ndx", "name": "纳斯达克", "secid": "100.NDX", "region": "美股"},
-    {"key": "hsi", "name": "恒生指数", "secid": "100.HSI", "region": "港股"},
-    {"key": "hstech", "name": "恒生科技", "secid": "124.HSTECH", "region": "港股"},
-)
+# 全球指数（东财 push2 secid；由 backend_config.json 在启动时读取）。
+_INDICES = tuple(index for index in GLOBAL_INDICES if index["source"] == "eastmoney")
 
 # 用户国家后缀 → 东方财富内部市场编号/财务代码后缀。
 # 若东财调整这些内部关系，只在此处维护；用户输入不暴露这些编号。

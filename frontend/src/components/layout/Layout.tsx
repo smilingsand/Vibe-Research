@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import {
   Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
   Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
-  Cog, Cpu, Database, Cable, Rocket, FlaskConical, Star, FileText, Swords,
+  Cog, Cpu, Database, Cable, Rocket, FlaskConical, Star, FileText, Swords, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
@@ -42,6 +42,7 @@ export function Layout() {
   const { pathname } = useLocation();
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
+  const [sectorsExpanded, setSectorsExpanded] = useState(true);
 
   useEffect(() => {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
@@ -71,25 +72,49 @@ export function Layout() {
         <nav className={cn("flex-1 space-y-1 overflow-auto", collapsed ? "p-1.5" : "p-2.5")}>
           {NAV.map(({ to, icon: Icon, label }) => {
             const active = pathname === to;
+            const isSectorCenter = to === "/sectors";
             return (
               <div key={to}>
-                <Link
-                  to={to}
-                  title={collapsed ? label : undefined}
-                  className={cn(
+                {isSectorCenter && !collapsed ? (
+                  <div className={cn(
                     "flex items-center rounded-lg text-sm transition-colors",
-                    collapsed ? "justify-center p-2.5" : "gap-2.5 px-3 py-2.5",
                     active
                       ? "bg-primary/15 font-medium text-primary shadow-glow"
                       : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                  )}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && label}
-                </Link>
+                  )}>
+                    <Link to={to} className="flex flex-1 items-center gap-2.5 px-3 py-2.5">
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {label}
+                    </Link>
+                    <button
+                      onClick={() => setSectorsExpanded((expanded) => !expanded)}
+                      className="mr-1 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      title={sectorsExpanded ? "收起子板块" : "展开子板块"}
+                      aria-label={sectorsExpanded ? "收起板块中心子板块" : "展开板块中心子板块"}
+                      aria-expanded={sectorsExpanded}
+                    >
+                      {sectorsExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </button>
+                  </div>
+                ) : (
+                  <Link
+                    to={to}
+                    title={collapsed ? label : undefined}
+                    className={cn(
+                      "flex items-center rounded-lg text-sm transition-colors",
+                      collapsed ? "justify-center p-2.5" : "gap-2.5 px-3 py-2.5",
+                      active
+                        ? "bg-primary/15 font-medium text-primary shadow-glow"
+                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {!collapsed && label}
+                  </Link>
+                )}
 
                 {/* 板块中心下方：常看板块的快捷入口（缩进） */}
-                {to === "/sectors" && (
+                {isSectorCenter && sectorsExpanded && (
                   <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-4 border-l border-border/40 pl-1.5")}>
                     {SECTOR_LINKS.map(({ to: st, icon: SIcon, label: slabel }) => {
                       const sactive = pathname === st;

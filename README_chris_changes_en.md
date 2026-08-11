@@ -75,6 +75,7 @@ Bare codes such as `AAPL` or `00700`, and the old Korean suffix such as `005930.
 - The page explicitly states that P&L is buy/sell price-difference P&L only and excludes dividends, rights issues, and other corporate actions. The three tables appear only when populated: holdings sort by market value descending, and purchase/close history sort by date descending; every table supports name-keyword filtering.
 - Holdings show up to 20 rows and purchase/close histories up to 10 rows before their internal scroll area is used. Purchase/close history and both transaction-entry panels are collapsed by default and expand with their arrow button.
 - Each table's name filter performs a case-insensitive contains match independently against both the company name and the security code, so a complete value or a fragment of either field works. Column headers remain fixed at the top of their own scroll area while table rows scroll.
+- While portfolio quotes are loading on initial entry, automatic refresh, or manual refresh, the page header shows a spinner and a `行情数据访问中...` status; it disappears after success or failure.
 
 ### Validation
 
@@ -85,3 +86,14 @@ Bare codes such as `AAPL` or `00700`, and the old Korean suffix such as `005930.
 - Frontend: the overseas-watchlist adaptation passed the TypeScript production build and the existing 16 tests.
 - Backend offline checks passed for syntax, cache persistence, stale snapshot rejection, refresh clearing, and title deduplication.
 - `pytest` is not installed in `backend/.venv`, so the added pytest tests have not been run there.
+
+## 2026-08-12 — Editable backend configuration
+
+- `backend/backend_config.json` centralizes three non-personal settings. Each `a_share_indices` and `global_indices` entry contains a stable `key`, display name, source request identifier (`secid`), region, and `source`; A-shares use `tencent` and global indices use `eastmoney`. `report_industry_keywords` defines report-filename categories and keywords.
+- The backend reads and validates this file at startup. Invalid JSON, missing required fields, or empty keyword lists produce a clear startup error instead of silently using an incorrect configuration.
+- Restart the backend after editing. Report classification evaluates `report_industry_keywords` in array order, so earlier categories take precedence.
+
+## 2026-08-12 — Sector center navigation notice
+
+- The right-side sector-center page title is now `板块中心 (建设中)`. The sidebar remains simply `板块中心` and has a separate arrow for expanding or collapsing its shortcut child sectors; it is expanded by default, and the arrow does not navigate.
+- The `indices` list in `frontend/src/data/sectors.json` is retained only as future reference and is not connected to a page or API. Daily Review indices continue to be obtained from the backend in real time.

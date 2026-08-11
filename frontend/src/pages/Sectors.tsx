@@ -12,7 +12,7 @@ export function Sectors() {
   return (
     <div>
       <PageHeader
-        title="板块中心"
+        title="板块中心 (建设中)"
         subtitle={`${sectors.length} 个热门赛道的产业链骨架 · 只有环节，不含标的`}
       />
 

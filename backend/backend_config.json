@@ -1,0 +1,27 @@
+{
+  "_comment": "后端配置：修改后请重启后端。指数条目的 secid 是相应数据源实际请求的标识；A股使用腾讯行情（tencent），全球指数使用东方财富 push2（eastmoney）。report_industry_keywords 按数组顺序优先匹配文件名。请保持 JSON 格式有效。",
+  "a_share_indices": [
+    { "key": "sh000001", "name": "上证指数", "secid": "sh000001", "region": "A股", "source": "tencent" },
+    { "key": "sz399001", "name": "深证成指", "secid": "sz399001", "region": "A股", "source": "tencent" },
+    { "key": "sz399006", "name": "创业板指", "secid": "sz399006", "region": "A股", "source": "tencent" },
+    { "key": "sh000300", "name": "沪深300", "secid": "sh000300", "region": "A股", "source": "tencent" }
+  ],
+  "global_indices": [
+    { "key": "dji", "name": "道琼斯", "secid": "100.DJIA", "region": "美股", "source": "eastmoney" },
+    { "key": "spx", "name": "标普500", "secid": "100.SPX", "region": "美股", "source": "eastmoney" },
+    { "key": "ndx", "name": "纳斯达克", "secid": "100.NDX", "region": "美股", "source": "eastmoney" },
+    { "key": "hsi", "name": "恒生指数", "secid": "100.HSI", "region": "港股", "source": "eastmoney" },
+    { "key": "hstech", "name": "恒生科技", "secid": "124.HSTECH", "region": "港股", "source": "eastmoney" }
+  ],
+  "report_industry_keywords": [
+    { "industry": "人形机器人", "keywords": ["人形", "机器人", "humanoid", "谐波", "丝杠", "滚柱", "灵巧手", "减速器", "optimus", "宇树", "特斯拉"] },
+    { "industry": "光互联", "keywords": ["光互联", "硅光", "cpo", "光模块", "磷化铟", "inp", "光芯片", "源杰", "中际旭创", "天孚"] },
+    { "industry": "HBM存储", "keywords": ["hbm", "存储", "内存", "dram", "长鑫", "美光", "海力士", "颗粒", "闪存", "nand"] },
+    { "industry": "AI算力", "keywords": ["算力", "gpu", "英伟达", "nvidia", "服务器", "液冷", "pcb", "交换机", "cowos", "沪电", "工业富联"] },
+    { "industry": "半导体", "keywords": ["半导体", "芯片", "晶圆", "光刻", "封测", "台积电", "刻蚀", "存储芯片"] },
+    { "industry": "新能源", "keywords": ["锂电", "电池", "光伏", "储能", "固态", "钠电", "宁德", "比亚迪"] },
+    { "industry": "创新药", "keywords": ["创新药", "医药", "生物", "cxo", "临床", "adc", "glp", "药明"] },
+    { "industry": "商业航天", "keywords": ["航天", "卫星", "火箭", "星链", "starlink", "spacex", "蓝箭"] },
+    { "industry": "电力电网", "keywords": ["电力", "电网", "特高压", "变压器", "输配电", "燃气轮机"] }
+  ]
+}
